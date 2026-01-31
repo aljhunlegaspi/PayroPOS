@@ -1,32 +1,31 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/constants/app_constants.dart';
 
 // Auth State
 enum AuthStatus { initial, authenticated, unauthenticated, loading }
 
-class AuthState {
+class AppAuthState {
   final AuthStatus status;
   final User? user;
   final Map<String, dynamic>? userData;
   final String? error;
 
-  const AuthState({
+  const AppAuthState({
     this.status = AuthStatus.initial,
     this.user,
     this.userData,
     this.error,
   });
 
-  AuthState copyWith({
+  AppAuthState copyWith({
     AuthStatus? status,
     User? user,
     Map<String, dynamic>? userData,
     String? error,
   }) {
-    return AuthState(
+    return AppAuthState(
       status: status ?? this.status,
       user: user ?? this.user,
       userData: userData ?? this.userData,
@@ -36,69 +35,96 @@ class AuthState {
 }
 
 // Auth Notifier
-class AuthNotifier extends StateNotifier<AuthState> {
-  final FirebaseAuth _auth;
-  final FirebaseFirestore _firestore;
+class AuthNotifier extends StateNotifier<AppAuthState> {
+  final SupabaseClient _supabase;
 
-  AuthNotifier({
-    FirebaseAuth? auth,
-    FirebaseFirestore? firestore,
-  })  : _auth = auth ?? FirebaseAuth.instance,
-        _firestore = firestore ?? FirebaseFirestore.instance,
-        super(const AuthState()) {
+  AuthNotifier({SupabaseClient? supabase})
+      : _supabase = supabase ?? Supabase.instance.client,
+        super(const AppAuthState()) {
     _init();
   }
 
   void _init() {
-    _auth.authStateChanges().listen((user) async {
-      if (user != null) {
-        final userData = await _getUserData(user.uid);
-        state = AuthState(
-          status: AuthStatus.authenticated,
-          user: user,
-          userData: userData,
-        );
-      } else {
-        state = const AuthState(status: AuthStatus.unauthenticated);
+    // Check current session on startup
+    final session = _supabase.auth.currentSession;
+    if (session != null) {
+      _handleAuthChange(session.user);
+    } else {
+      state = const AppAuthState(status: AuthStatus.unauthenticated);
+    }
+
+    // Listen to auth state changes
+    _supabase.auth.onAuthStateChange.listen((data) {
+      final event = data.event;
+      final user = data.session?.user;
+
+      debugPrint('🔐 Auth state changed: $event');
+
+      if (event == AuthChangeEvent.signedIn || event == AuthChangeEvent.tokenRefreshed) {
+        if (user != null) {
+          _handleAuthChange(user);
+        }
+      } else if (event == AuthChangeEvent.signedOut) {
+        state = const AppAuthState(status: AuthStatus.unauthenticated);
       }
     });
   }
 
+  Future<void> _handleAuthChange(User user) async {
+    final userData = await _getUserData(user.id);
+    state = AppAuthState(
+      status: AuthStatus.authenticated,
+      user: user,
+      userData: userData,
+    );
+  }
+
   Future<Map<String, dynamic>?> _getUserData(String uid) async {
     try {
-      final doc = await _firestore
-          .collection(AppConstants.usersCollection)
-          .doc(uid)
-          .get();
+      final response = await _supabase
+          .from('profiles')
+          .select()
+          .eq('id', uid)
+          .maybeSingle();
 
-      final data = doc.data();
-      debugPrint('📋 User data from Firestore: $data');
+      debugPrint('📋 User data from Supabase: $response');
 
-      // If document doesn't exist or is missing key fields, create/update it
-      if (data == null || data['fullName'] == null) {
-        final user = _auth.currentUser;
+      if (response == null) {
+        // Profile should be auto-created by trigger, but create if missing
+        final user = _supabase.auth.currentUser;
         if (user != null) {
           final newData = {
-            'uid': user.uid,
+            'id': user.id,
             'email': user.email,
-            'fullName': user.displayName ?? user.email?.split('@').first ?? 'User',
-            'role': data?['role'] ?? AppConstants.roleStoreOwner,
-            'createdAt': data?['createdAt'] ?? FieldValue.serverTimestamp(),
-            'updatedAt': FieldValue.serverTimestamp(),
-            ...?data, // Keep existing data
+            'full_name': user.userMetadata?['full_name'] ?? user.email?.split('@').first ?? 'User',
+            'role': AppConstants.roleStoreOwner,
           };
 
-          await _firestore
-              .collection(AppConstants.usersCollection)
-              .doc(uid)
-              .set(newData, SetOptions(merge: true));
+          await _supabase.from('profiles').upsert(newData);
+          debugPrint('📝 Created profile: $newData');
 
-          debugPrint('📝 Created/updated user document with: $newData');
-          return newData;
+          // Convert to app format
+          return {
+            'uid': user.id,
+            'email': user.email,
+            'fullName': newData['full_name'],
+            'role': newData['role'],
+          };
         }
+        return null;
       }
 
-      return data;
+      // Convert Supabase snake_case to app camelCase format
+      final data = response;
+      return {
+        'uid': data['id'],
+        'email': data['email'],
+        'fullName': data['full_name'],
+        'phone': data['phone'],
+        'role': data['role'] ?? AppConstants.roleStoreOwner,
+        'storeId': data['store_id'],
+        'locationId': data['location_id'],
+      };
     } catch (e) {
       debugPrint('❌ Error getting user data: $e');
       return null;
@@ -109,16 +135,21 @@ class AuthNotifier extends StateNotifier<AuthState> {
     try {
       state = state.copyWith(status: AuthStatus.loading, error: null);
       debugPrint('🔐 Attempting sign in for: $email');
-      await _auth.signInWithEmailAndPassword(
+
+      final response = await _supabase.auth.signInWithPassword(
         email: email,
         password: password,
       );
-      debugPrint('✅ Sign in successful');
-    } on FirebaseAuthException catch (e) {
-      debugPrint('❌ FirebaseAuthException: ${e.code} - ${e.message}');
+
+      if (response.user != null) {
+        debugPrint('✅ Sign in successful');
+        // Auth state listener will handle the rest
+      }
+    } on AuthException catch (e) {
+      debugPrint('❌ AuthException: ${e.message}');
       state = state.copyWith(
         status: AuthStatus.unauthenticated,
-        error: _getErrorMessage(e.code),
+        error: _getErrorMessage(e.message),
       );
     } catch (e, stackTrace) {
       debugPrint('❌ Sign in error: $e');
@@ -133,42 +164,40 @@ class AuthNotifier extends StateNotifier<AuthState> {
   Future<void> signUp(String email, String password, String fullName) async {
     try {
       state = state.copyWith(status: AuthStatus.loading, error: null);
-
       debugPrint('📝 Starting signup for: $email');
 
-      final credential = await _auth.createUserWithEmailAndPassword(
+      final response = await _supabase.auth.signUp(
         email: email,
         password: password,
+        data: {'full_name': fullName},
       );
 
-      debugPrint('✅ User created: ${credential.user?.uid}');
+      debugPrint('✅ User created: ${response.user?.id}');
 
-      if (credential.user != null) {
-        // Create user document in Firestore
-        debugPrint('📄 Creating Firestore document...');
-        await _firestore
-            .collection(AppConstants.usersCollection)
-            .doc(credential.user!.uid)
-            .set({
-          'uid': credential.user!.uid,
-          'email': email,
-          'fullName': fullName,
-          'role': AppConstants.roleStoreOwner,
-          'createdAt': FieldValue.serverTimestamp(),
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
+      if (response.user != null) {
+        // Profile is auto-created by database trigger
+        // Wait a moment for the trigger to complete, then update with full_name
+        await Future.delayed(const Duration(milliseconds: 500));
 
-        debugPrint('✅ Firestore document created');
-
-        // Update display name
-        await credential.user!.updateDisplayName(fullName);
-        debugPrint('✅ Display name updated');
+        try {
+          await _supabase
+              .from('profiles')
+              .update({
+                'full_name': fullName,
+                'role': AppConstants.roleStoreOwner,
+              })
+              .eq('id', response.user!.id);
+          debugPrint('✅ Profile updated');
+        } catch (e) {
+          // Profile update failed, but user is created - that's OK
+          debugPrint('⚠️ Profile update skipped: $e');
+        }
       }
-    } on FirebaseAuthException catch (e) {
-      debugPrint('❌ FirebaseAuthException: ${e.code} - ${e.message}');
+    } on AuthException catch (e) {
+      debugPrint('❌ AuthException: ${e.message}');
       state = state.copyWith(
         status: AuthStatus.unauthenticated,
-        error: _getErrorMessage(e.code),
+        error: _getErrorMessage(e.message),
       );
     } catch (e, stackTrace) {
       debugPrint('❌ Signup error: $e');
@@ -183,12 +212,12 @@ class AuthNotifier extends StateNotifier<AuthState> {
   Future<void> resetPassword(String email) async {
     try {
       state = state.copyWith(status: AuthStatus.loading, error: null);
-      await _auth.sendPasswordResetEmail(email: email);
+      await _supabase.auth.resetPasswordForEmail(email);
       state = state.copyWith(status: AuthStatus.unauthenticated);
-    } on FirebaseAuthException catch (e) {
+    } on AuthException catch (e) {
       state = state.copyWith(
         status: AuthStatus.unauthenticated,
-        error: _getErrorMessage(e.code),
+        error: _getErrorMessage(e.message),
       );
     } catch (e) {
       state = state.copyWith(
@@ -200,49 +229,42 @@ class AuthNotifier extends StateNotifier<AuthState> {
 
   Future<void> signOut() async {
     try {
-      await _auth.signOut();
+      await _supabase.auth.signOut();
     } catch (e) {
       state = state.copyWith(error: 'Failed to sign out');
     }
   }
 
-  /// Refresh user data from Firestore (call after store setup or profile updates)
+  /// Refresh user data from Supabase (call after store setup or profile updates)
   Future<void> refreshUserData() async {
-    final user = _auth.currentUser;
+    final user = _supabase.auth.currentUser;
     if (user != null) {
-      debugPrint('🔄 Refreshing user data for: ${user.uid}');
-      final userData = await _getUserData(user.uid);
+      debugPrint('🔄 Refreshing user data for: ${user.id}');
+      final userData = await _getUserData(user.id);
       debugPrint('📦 User data refreshed, storeId: ${userData?['storeId']}');
-      state = state.copyWith(
-        userData: userData,
-      );
+      state = state.copyWith(userData: userData);
     }
   }
 
-  String _getErrorMessage(String code) {
-    switch (code) {
-      case 'user-not-found':
-        return 'No user found with this email';
-      case 'wrong-password':
-        return 'Incorrect password';
-      case 'email-already-in-use':
-        return 'Email is already registered';
-      case 'invalid-email':
-        return 'Invalid email address';
-      case 'weak-password':
-        return 'Password is too weak';
-      case 'user-disabled':
-        return 'This account has been disabled';
-      case 'too-many-requests':
-        return 'Too many attempts. Please try again later';
-      default:
-        return 'Authentication failed';
+  String _getErrorMessage(String message) {
+    final lowerMessage = message.toLowerCase();
+    if (lowerMessage.contains('user not found') || lowerMessage.contains('invalid login')) {
+      return 'Invalid email or password';
+    } else if (lowerMessage.contains('email already')) {
+      return 'Email is already registered';
+    } else if (lowerMessage.contains('invalid email')) {
+      return 'Invalid email address';
+    } else if (lowerMessage.contains('weak password') || lowerMessage.contains('password')) {
+      return 'Password must be at least 6 characters';
+    } else if (lowerMessage.contains('too many requests')) {
+      return 'Too many attempts. Please try again later';
     }
+    return message;
   }
 }
 
 // Providers
-final authProvider = StateNotifierProvider<AuthNotifier, AuthState>((ref) {
+final authProvider = StateNotifierProvider<AuthNotifier, AppAuthState>((ref) {
   return AuthNotifier();
 });
 

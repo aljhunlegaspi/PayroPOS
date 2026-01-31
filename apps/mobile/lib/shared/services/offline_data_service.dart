@@ -9,7 +9,7 @@ import '../providers/stock_provider.dart';
 import '../providers/cart_provider.dart';
 
 /// Service for managing offline data operations
-/// Acts as a bridge between Firebase models and local Hive models
+/// Acts as a bridge between Supabase models and local Hive models
 class OfflineDataService {
   final HiveService _hive;
 
@@ -17,7 +17,7 @@ class OfflineDataService {
 
   // ==================== Product Conversions ====================
 
-  /// Convert Firebase Product to LocalProduct
+  /// Convert Supabase Product to LocalProduct
   LocalProduct productToLocal(Product product) {
     return LocalProduct(
       firestoreId: product.id,
@@ -40,7 +40,7 @@ class OfflineDataService {
     );
   }
 
-  /// Convert LocalProduct to Firebase Product
+  /// Convert LocalProduct to Supabase Product
   Product localToProduct(LocalProduct local) {
     return Product(
       id: local.firestoreId,
@@ -94,7 +94,7 @@ class OfflineDataService {
 
   // ==================== Category Conversions ====================
 
-  /// Convert Firebase Category to LocalCategory
+  /// Convert Supabase Category to LocalCategory
   LocalCategory categoryToLocal(Category category) {
     return LocalCategory(
       firestoreId: category.id,
@@ -108,7 +108,7 @@ class OfflineDataService {
     );
   }
 
-  /// Convert LocalCategory to Firebase Category
+  /// Convert LocalCategory to Supabase Category
   Category localToCategory(LocalCategory local) {
     return Category(
       id: local.firestoreId,
@@ -135,7 +135,7 @@ class OfflineDataService {
 
   // ==================== Store Conversions ====================
 
-  /// Convert Firebase Store to LocalStore
+  /// Convert Supabase Store to LocalStore
   LocalStore storeToLocal(Store store) {
     return LocalStore(
       firestoreId: store.id,
@@ -151,7 +151,7 @@ class OfflineDataService {
     );
   }
 
-  /// Convert LocalStore to Firebase Store
+  /// Convert LocalStore to Supabase Store
   Store localToStore(LocalStore local) {
     return Store(
       id: local.firestoreId,
@@ -181,7 +181,7 @@ class OfflineDataService {
 
   // ==================== Location Conversions ====================
 
-  /// Convert Firebase StoreLocation to LocalStoreLocation
+  /// Convert Supabase StoreLocation to LocalStoreLocation
   LocalStoreLocation locationToLocal(StoreLocation location) {
     return LocalStoreLocation(
       firestoreId: location.id,
@@ -196,7 +196,7 @@ class OfflineDataService {
     );
   }
 
-  /// Convert LocalStoreLocation to Firebase StoreLocation
+  /// Convert LocalStoreLocation to Supabase StoreLocation
   StoreLocation localToLocation(LocalStoreLocation local) {
     return StoreLocation(
       id: local.firestoreId,

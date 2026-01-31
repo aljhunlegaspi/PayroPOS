@@ -1,7 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import '../../core/constants/app_constants.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'auth_provider.dart';
 
 // Store Model
@@ -28,30 +27,29 @@ class Store {
     this.createdAt,
   });
 
-  factory Store.fromFirestore(DocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>;
+  factory Store.fromSupabase(Map<String, dynamic> data) {
     return Store(
-      id: doc.id,
+      id: data['id'] ?? '',
       name: data['name'] ?? '',
-      businessType: data['businessType'] ?? 'retail',
-      hasMultipleLocations: data['hasMultipleLocations'] ?? false,
+      businessType: data['business_type'] ?? 'retail',
+      hasMultipleLocations: data['has_multiple_locations'] ?? false,
       logo: data['logo'],
-      ownerId: data['ownerId'] ?? '',
+      ownerId: data['owner_id'] ?? '',
       settings: data['settings'] ?? {},
-      isActive: data['isActive'] ?? true,
-      createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
+      isActive: data['is_active'] ?? true,
+      createdAt: data['created_at'] != null ? DateTime.parse(data['created_at']) : null,
     );
   }
 
-  Map<String, dynamic> toMap() {
+  Map<String, dynamic> toSupabase() {
     return {
       'name': name,
-      'businessType': businessType,
-      'hasMultipleLocations': hasMultipleLocations,
+      'business_type': businessType,
+      'has_multiple_locations': hasMultipleLocations,
       'logo': logo,
-      'ownerId': ownerId,
+      'owner_id': ownerId,
       'settings': settings,
-      'isActive': isActive,
+      'is_active': isActive,
     };
   }
 }
@@ -78,28 +76,27 @@ class StoreLocation {
     this.createdAt,
   });
 
-  factory StoreLocation.fromFirestore(DocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>;
+  factory StoreLocation.fromSupabase(Map<String, dynamic> data) {
     return StoreLocation(
-      id: doc.id,
-      storeId: data['storeId'] ?? '',
+      id: data['id'] ?? '',
+      storeId: data['store_id'] ?? '',
       name: data['name'] ?? '',
       address: data['address'] ?? '',
       phone: data['phone'] ?? '',
-      isDefault: data['isDefault'] ?? false,
-      isActive: data['isActive'] ?? true,
-      createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
+      isDefault: data['is_default'] ?? false,
+      isActive: data['is_active'] ?? true,
+      createdAt: data['created_at'] != null ? DateTime.parse(data['created_at']) : null,
     );
   }
 
-  Map<String, dynamic> toMap() {
+  Map<String, dynamic> toSupabase() {
     return {
-      'storeId': storeId,
+      'store_id': storeId,
       'name': name,
       'address': address,
       'phone': phone,
-      'isDefault': isDefault,
-      'isActive': isActive,
+      'is_default': isDefault,
+      'is_active': isActive,
     };
   }
 }
@@ -139,11 +136,11 @@ class StoreState {
 
 // Store Notifier
 class StoreNotifier extends StateNotifier<StoreState> {
-  final FirebaseFirestore _firestore;
+  final SupabaseClient _supabase;
   final Ref _ref;
 
-  StoreNotifier(this._ref, {FirebaseFirestore? firestore})
-      : _firestore = firestore ?? FirebaseFirestore.instance,
+  StoreNotifier(this._ref, {SupabaseClient? supabase})
+      : _supabase = supabase ?? Supabase.instance.client,
         super(const StoreState()) {
     _init();
   }
@@ -153,7 +150,7 @@ class StoreNotifier extends StateNotifier<StoreState> {
     final currentAuth = _ref.read(authProvider);
     if (currentAuth.status == AuthStatus.authenticated && currentAuth.userData != null) {
       final storeId = currentAuth.userData!['storeId'] as String?;
-      final locationId = currentAuth.userData!['defaultLocationId'] as String?;
+      final locationId = currentAuth.userData!['locationId'] as String?;
       if (storeId != null) {
         debugPrint('📦 Loading store on init: $storeId');
         loadStore(storeId, locationId);
@@ -161,10 +158,10 @@ class StoreNotifier extends StateNotifier<StoreState> {
     }
 
     // Listen to auth changes for future updates
-    _ref.listen<AuthState>(authProvider, (previous, next) {
+    _ref.listen<AppAuthState>(authProvider, (previous, next) {
       if (next.status == AuthStatus.authenticated && next.userData != null) {
         final storeId = next.userData!['storeId'] as String?;
-        final locationId = next.userData!['defaultLocationId'] as String?;
+        final locationId = next.userData!['locationId'] as String?;
         if (storeId != null && state.store?.id != storeId) {
           debugPrint('📦 Loading store on auth change: $storeId');
           loadStore(storeId, locationId);
@@ -180,36 +177,36 @@ class StoreNotifier extends StateNotifier<StoreState> {
       state = state.copyWith(isLoading: true, error: null);
 
       // Load store
-      final storeDoc = await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(storeId)
-          .get();
+      final storeData = await _supabase
+          .from('stores')
+          .select()
+          .eq('id', storeId)
+          .maybeSingle();
 
-      if (!storeDoc.exists) {
+      if (storeData == null) {
         state = state.copyWith(isLoading: false, error: 'Store not found');
         return;
       }
 
-      final store = Store.fromFirestore(storeDoc);
+      final store = Store.fromSupabase(storeData);
 
       // Load locations
-      final locationsSnapshot = await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(storeId)
-          .collection('locations')
-          .orderBy('createdAt')
-          .get();
+      final locationsData = await _supabase
+          .from('locations')
+          .select()
+          .eq('store_id', storeId)
+          .order('created_at');
 
-      final locations = locationsSnapshot.docs
-          .map((doc) => StoreLocation.fromFirestore(doc))
+      final locations = (locationsData as List)
+          .map((data) => StoreLocation.fromSupabase(data))
           .toList();
 
       // Find current/default location
       StoreLocation? currentLocation;
-      if (defaultLocationId != null) {
+      if (defaultLocationId != null && locations.isNotEmpty) {
         currentLocation = locations.firstWhere(
           (l) => l.id == defaultLocationId,
-          orElse: () => locations.isNotEmpty ? locations.first : locations.first,
+          orElse: () => locations.first,
         );
       } else if (locations.isNotEmpty) {
         currentLocation = locations.firstWhere(
@@ -240,15 +237,14 @@ class StoreNotifier extends StateNotifier<StoreState> {
     try {
       state = state.copyWith(isLoading: true, error: null);
 
-      await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(state.store!.id)
+      await _supabase
+          .from('stores')
           .update({
-        'name': name,
-        'businessType': businessType,
-        if (logo != null) 'logo': logo,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+            'name': name,
+            'business_type': businessType,
+            if (logo != null) 'logo': logo,
+          })
+          .eq('id', state.store!.id);
 
       // Reload store
       await loadStore(state.store!.id, state.currentLocation?.id);
@@ -269,13 +265,10 @@ class StoreNotifier extends StateNotifier<StoreState> {
       final currentSettings = Map<String, dynamic>.from(state.store!.settings);
       currentSettings.addAll(settings);
 
-      await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(state.store!.id)
-          .update({
-        'settings': currentSettings,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+      await _supabase
+          .from('stores')
+          .update({'settings': currentSettings})
+          .eq('id', state.store!.id);
 
       // Reload store
       await loadStore(state.store!.id, state.currentLocation?.id);
@@ -292,13 +285,10 @@ class StoreNotifier extends StateNotifier<StoreState> {
     try {
       state = state.copyWith(isLoading: true, error: null);
 
-      await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(state.store!.id)
-          .update({
-        'hasMultipleLocations': true,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+      await _supabase
+          .from('stores')
+          .update({'has_multiple_locations': true})
+          .eq('id', state.store!.id);
 
       // Reload store
       await loadStore(state.store!.id, state.currentLocation?.id);
@@ -321,55 +311,41 @@ class StoreNotifier extends StateNotifier<StoreState> {
       state = state.copyWith(isLoading: true, error: null);
 
       final storeId = state.store!.id;
-      final locationRef = _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(storeId)
-          .collection('locations')
-          .doc();
 
       // If this is the first additional location, enable multiple locations
       if (!state.store!.hasMultipleLocations) {
-        await _firestore
-            .collection(AppConstants.storesCollection)
-            .doc(storeId)
-            .update({
-          'hasMultipleLocations': true,
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
+        await _supabase
+            .from('stores')
+            .update({'has_multiple_locations': true})
+            .eq('id', storeId);
       }
 
       // If setting as default, unset other defaults
       if (isDefault && state.locations.isNotEmpty) {
-        final batch = _firestore.batch();
-        for (final loc in state.locations.where((l) => l.isDefault)) {
-          batch.update(
-            _firestore
-                .collection(AppConstants.storesCollection)
-                .doc(storeId)
-                .collection('locations')
-                .doc(loc.id),
-            {'isDefault': false},
-          );
-        }
-        await batch.commit();
+        await _supabase
+            .from('locations')
+            .update({'is_default': false})
+            .eq('store_id', storeId);
       }
 
-      await locationRef.set({
-        'id': locationRef.id,
-        'storeId': storeId,
-        'name': name,
-        'address': address,
-        'phone': phone,
-        'isDefault': isDefault,
-        'isActive': true,
-        'createdAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+      // Insert new location
+      final response = await _supabase
+          .from('locations')
+          .insert({
+            'store_id': storeId,
+            'name': name,
+            'address': address,
+            'phone': phone,
+            'is_default': isDefault,
+            'is_active': true,
+          })
+          .select()
+          .single();
 
       // Reload store
       await loadStore(storeId, state.currentLocation?.id);
 
-      return state.locations.firstWhere((l) => l.id == locationRef.id);
+      return StoreLocation.fromSupabase(response);
     } catch (e) {
       debugPrint('❌ Error adding location: $e');
       state = state.copyWith(isLoading: false, error: e.toString());
@@ -388,17 +364,14 @@ class StoreNotifier extends StateNotifier<StoreState> {
     try {
       state = state.copyWith(isLoading: true, error: null);
 
-      await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(state.store!.id)
-          .collection('locations')
-          .doc(locationId)
+      await _supabase
+          .from('locations')
           .update({
-        'name': name,
-        'address': address,
-        'phone': phone,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+            'name': name,
+            'address': address,
+            'phone': phone,
+          })
+          .eq('id', locationId);
 
       // Reload store
       await loadStore(state.store!.id, state.currentLocation?.id);
@@ -416,27 +389,25 @@ class StoreNotifier extends StateNotifier<StoreState> {
       state = state.copyWith(isLoading: true, error: null);
       final storeId = state.store!.id;
 
-      // Unset all defaults and set new default
-      final batch = _firestore.batch();
-      for (final loc in state.locations) {
-        batch.update(
-          _firestore
-              .collection(AppConstants.storesCollection)
-              .doc(storeId)
-              .collection('locations')
-              .doc(loc.id),
-          {'isDefault': loc.id == locationId},
-        );
-      }
-      await batch.commit();
+      // Unset all defaults
+      await _supabase
+          .from('locations')
+          .update({'is_default': false})
+          .eq('store_id', storeId);
+
+      // Set new default
+      await _supabase
+          .from('locations')
+          .update({'is_default': true})
+          .eq('id', locationId);
 
       // Update user's default location
-      final user = _ref.read(currentUserProvider);
+      final user = _supabase.auth.currentUser;
       if (user != null) {
-        await _firestore
-            .collection(AppConstants.usersCollection)
-            .doc(user.uid)
-            .update({'defaultLocationId': locationId});
+        await _supabase
+            .from('profiles')
+            .update({'location_id': locationId})
+            .eq('id', user.id);
       }
 
       // Reload store

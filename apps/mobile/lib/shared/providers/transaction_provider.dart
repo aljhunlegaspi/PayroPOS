@@ -1,7 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import '../../core/constants/app_constants.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/connectivity_service.dart';
 import '../services/offline_data_service.dart';
 import 'store_provider.dart';
@@ -31,7 +30,7 @@ class TransactionItem {
 
   Map<String, dynamic> toMap() {
     return {
-      'productId': productId,
+      'product_id': productId,
       'name': name,
       'price': price,
       'cost': cost,
@@ -42,7 +41,7 @@ class TransactionItem {
 
   factory TransactionItem.fromMap(Map<String, dynamic> map) {
     return TransactionItem(
-      productId: map['productId'] ?? '',
+      productId: map['product_id'] ?? map['productId'] ?? '',
       name: map['name'] ?? '',
       price: (map['price'] ?? 0).toDouble(),
       cost: map['cost']?.toDouble(),
@@ -103,50 +102,48 @@ class SaleTransaction {
     required this.createdAt,
   });
 
-  Map<String, dynamic> toMap() {
+  Map<String, dynamic> toSupabase() {
     return {
-      'storeId': storeId,
-      'locationId': locationId,
-      'receiptNumber': receiptNumber,
-      'customerId': customerId,
-      'customerName': customerName,
-      'staffId': staffId,
-      'staffName': staffName,
+      'store_id': storeId,
+      'location_id': locationId,
+      'receipt_number': receiptNumber,
+      'customer_id': customerId,
+      'customer_name': customerName,
+      'staff_id': staffId,
+      'staff_name': staffName,
       'items': items.map((item) => item.toMap()).toList(),
       'subtotal': subtotal,
-      'taxRate': taxRate,
+      'tax_rate': taxRate,
       'tax': tax,
       'total': total,
-      'paymentMethod': paymentMethod,
-      'amountReceived': amountReceived,
+      'payment_method': paymentMethod,
+      'amount_received': amountReceived,
       'change': change,
-      'createdAt': FieldValue.serverTimestamp(),
     };
   }
 
-  factory SaleTransaction.fromFirestore(DocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>;
+  factory SaleTransaction.fromSupabase(Map<String, dynamic> data) {
     return SaleTransaction(
-      id: doc.id,
-      storeId: data['storeId'] ?? '',
-      locationId: data['locationId'] ?? '',
-      receiptNumber: data['receiptNumber'] ?? '',
-      customerId: data['customerId'],
-      customerName: data['customerName'],
-      staffId: data['staffId'] ?? '',
-      staffName: data['staffName'] ?? '',
+      id: data['id'] ?? '',
+      storeId: data['store_id'] ?? '',
+      locationId: data['location_id'] ?? '',
+      receiptNumber: data['receipt_number'] ?? '',
+      customerId: data['customer_id'],
+      customerName: data['customer_name'],
+      staffId: data['staff_id'] ?? '',
+      staffName: data['staff_name'] ?? '',
       items: (data['items'] as List<dynamic>?)
-              ?.map((item) => TransactionItem.fromMap(item))
+              ?.map((item) => TransactionItem.fromMap(item as Map<String, dynamic>))
               .toList() ??
           [],
       subtotal: (data['subtotal'] ?? 0).toDouble(),
-      taxRate: (data['taxRate'] ?? 0.12).toDouble(),
+      taxRate: (data['tax_rate'] ?? 0.12).toDouble(),
       tax: (data['tax'] ?? 0).toDouble(),
       total: (data['total'] ?? 0).toDouble(),
-      paymentMethod: data['paymentMethod'] ?? 'cash',
-      amountReceived: (data['amountReceived'] ?? 0).toDouble(),
+      paymentMethod: data['payment_method'] ?? 'cash',
+      amountReceived: (data['amount_received'] ?? 0).toDouble(),
       change: (data['change'] ?? 0).toDouble(),
-      createdAt: (data['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      createdAt: data['created_at'] != null ? DateTime.parse(data['created_at']) : DateTime.now(),
     );
   }
 
@@ -196,14 +193,14 @@ class TransactionState {
 
 // Transaction Notifier
 class TransactionNotifier extends StateNotifier<TransactionState> {
-  final FirebaseFirestore _firestore;
+  final SupabaseClient _supabase;
   final Ref _ref;
   String? _currentStoreId;
   String? _currentLocationId;
   OfflineDataService? _offlineService;
 
-  TransactionNotifier(this._ref, {FirebaseFirestore? firestore})
-      : _firestore = firestore ?? FirebaseFirestore.instance,
+  TransactionNotifier(this._ref, {SupabaseClient? supabase})
+      : _supabase = supabase ?? Supabase.instance.client,
         super(const TransactionState()) {
     _init();
   }
@@ -243,28 +240,17 @@ class TransactionNotifier extends StateNotifier<TransactionState> {
     }
 
     final year = DateTime.now().year;
-    final today = DateTime.now();
-    final startOfDay = DateTime(today.year, today.month, today.day);
-
-    // Query today's transactions to get count
-    final snapshot = await _firestore
-        .collection(AppConstants.storesCollection)
-        .doc(_currentStoreId)
-        .collection(AppConstants.transactionsCollection)
-        .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfDay))
-        .get();
+    final yearStart = DateTime(year, 1, 1).toIso8601String();
 
     // Get total transaction count for the year for sequence
-    final yearStart = DateTime(year, 1, 1);
-    final yearSnapshot = await _firestore
-        .collection(AppConstants.storesCollection)
-        .doc(_currentStoreId)
-        .collection(AppConstants.transactionsCollection)
-        .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(yearStart))
-        .count()
-        .get();
+    final response = await _supabase
+        .from('transactions')
+        .select('id')
+        .eq('store_id', _currentStoreId!)
+        .gte('created_at', yearStart);
 
-    final sequenceNumber = (yearSnapshot.count ?? 0) + 1;
+    final count = (response as List).length;
+    final sequenceNumber = count + 1;
     return SaleTransaction.generateReceiptNumber(sequenceNumber);
   }
 
@@ -294,38 +280,36 @@ class TransactionNotifier extends StateNotifier<TransactionState> {
       SaleTransaction transaction;
 
       if (_isOnline) {
-        // Online: save directly to Firestore
+        // Online: save directly to Supabase
         final receiptNumber = await _getNextReceiptNumber();
         debugPrint('💳 Receipt number: $receiptNumber');
 
-        final docRef = _firestore
-            .collection(AppConstants.storesCollection)
-            .doc(_currentStoreId)
-            .collection(AppConstants.transactionsCollection)
-            .doc();
+        final transactionData = {
+          'store_id': _currentStoreId,
+          'location_id': _currentLocationId,
+          'receipt_number': receiptNumber,
+          'customer_id': cart.customerId,
+          'customer_name': cart.customerName,
+          'staff_id': staffId,
+          'staff_name': staffName,
+          'items': cart.items.map((item) => TransactionItem.fromCartItem(item).toMap()).toList(),
+          'subtotal': cart.subtotal,
+          'tax_rate': cart.taxRate,
+          'tax': cart.tax,
+          'total': cart.total,
+          'payment_method': paymentMethod,
+          'amount_received': amountReceived,
+          'change': amountReceived - cart.total,
+        };
 
-        transaction = SaleTransaction(
-          id: docRef.id,
-          storeId: _currentStoreId!,
-          locationId: _currentLocationId!,
-          receiptNumber: receiptNumber,
-          customerId: cart.customerId,
-          customerName: cart.customerName,
-          staffId: staffId,
-          staffName: staffName,
-          items: cart.items.map((item) => TransactionItem.fromCartItem(item)).toList(),
-          subtotal: cart.subtotal,
-          taxRate: cart.taxRate,
-          tax: cart.tax,
-          total: cart.total,
-          paymentMethod: paymentMethod,
-          amountReceived: amountReceived,
-          change: amountReceived - cart.total,
-          createdAt: DateTime.now(),
-        );
+        final response = await _supabase
+            .from('transactions')
+            .insert(transactionData)
+            .select()
+            .single();
 
-        await docRef.set(transaction.toMap());
-        debugPrint('💳 Transaction saved to Firestore: ${transaction.id}');
+        transaction = SaleTransaction.fromSupabase(response);
+        debugPrint('💳 Transaction saved to Supabase: ${transaction.id}');
 
         // Decrease stock online
         await _decreaseStock(cart.items);
@@ -377,32 +361,24 @@ class TransactionNotifier extends StateNotifier<TransactionState> {
   Future<void> _decreaseStock(List<CartItem> items) async {
     if (_currentStoreId == null || _currentLocationId == null) return;
 
-    final batch = _firestore.batch();
-
     for (final item in items) {
-      final productRef = _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(_currentStoreId)
-          .collection('products')
-          .doc(item.productId);
-
       // Get current product to update stock
-      final productDoc = await productRef.get();
-      if (productDoc.exists) {
-        final data = productDoc.data() as Map<String, dynamic>;
-        final stockByLocation = Map<String, dynamic>.from(data['stockByLocation'] ?? {});
-        final currentStock = (stockByLocation[_currentLocationId] as num?)?.toInt() ?? 0;
-        final newStock = currentStock - item.quantity;
-        stockByLocation[_currentLocationId!] = newStock < 0 ? 0 : newStock;
+      final productData = await _supabase
+          .from('products')
+          .select('stock_by_location')
+          .eq('id', item.productId)
+          .single();
 
-        batch.update(productRef, {
-          'stockByLocation': stockByLocation,
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
-      }
+      final stockByLocation = Map<String, dynamic>.from(productData['stock_by_location'] ?? {});
+      final currentStock = (stockByLocation[_currentLocationId] as num?)?.toInt() ?? 0;
+      final newStock = currentStock - item.quantity;
+      stockByLocation[_currentLocationId!] = newStock < 0 ? 0 : newStock;
+
+      await _supabase
+          .from('products')
+          .update({'stock_by_location': stockByLocation})
+          .eq('id', item.productId);
     }
-
-    await batch.commit();
 
     // Refresh products
     await _ref.read(productProvider.notifier).refreshProducts();
@@ -418,20 +394,19 @@ class TransactionNotifier extends StateNotifier<TransactionState> {
       List<SaleTransaction> transactions;
 
       if (_isOnline) {
-        // Online: load from Firestore
+        // Online: load from Supabase
         final today = DateTime.now();
-        final startOfDay = DateTime(today.year, today.month, today.day);
+        final startOfDay = DateTime(today.year, today.month, today.day).toIso8601String();
 
-        final snapshot = await _firestore
-            .collection(AppConstants.storesCollection)
-            .doc(_currentStoreId)
-            .collection(AppConstants.transactionsCollection)
-            .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfDay))
-            .orderBy('createdAt', descending: true)
-            .get();
+        final response = await _supabase
+            .from('transactions')
+            .select()
+            .eq('store_id', _currentStoreId!)
+            .gte('created_at', startOfDay)
+            .order('created_at', ascending: false);
 
-        transactions = snapshot.docs
-            .map((doc) => SaleTransaction.fromFirestore(doc))
+        transactions = (response as List)
+            .map((data) => SaleTransaction.fromSupabase(data))
             .toList();
       } else {
         // Offline: load from local cache
@@ -476,15 +451,14 @@ class TransactionNotifier extends StateNotifier<TransactionState> {
     if (_currentStoreId == null) return null;
 
     try {
-      final doc = await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(_currentStoreId)
-          .collection(AppConstants.transactionsCollection)
-          .doc(transactionId)
-          .get();
+      final response = await _supabase
+          .from('transactions')
+          .select()
+          .eq('id', transactionId)
+          .maybeSingle();
 
-      if (doc.exists) {
-        return SaleTransaction.fromFirestore(doc);
+      if (response != null) {
+        return SaleTransaction.fromSupabase(response);
       }
       return null;
     } catch (e) {

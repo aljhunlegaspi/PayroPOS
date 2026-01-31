@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/database/hive_service.dart';
 import '../../core/database/hive_models.dart';
 import 'connectivity_service.dart';
@@ -25,12 +25,12 @@ enum SyncEntityType {
 class SyncResult {
   final bool success;
   final String? error;
-  final String? firestoreId;
+  final String? supabaseId;
 
   SyncResult({
     required this.success,
     this.error,
-    this.firestoreId,
+    this.supabaseId,
   });
 }
 
@@ -74,7 +74,7 @@ class SyncState {
 /// Service for managing offline-to-online synchronization
 class SyncService {
   static SyncService? _instance;
-  final FirebaseFirestore _firestore;
+  final SupabaseClient _supabase;
   final HiveService _hive;
 
   Timer? _syncTimer;
@@ -84,10 +84,10 @@ class SyncService {
   SyncState _currentState = const SyncState();
 
   SyncService._({
-    FirebaseFirestore? firestore,
-    HiveService? isar,
-  })  : _firestore = firestore ?? FirebaseFirestore.instance,
-        _hive = isar ?? HiveService.instance;
+    SupabaseClient? supabase,
+    HiveService? hive,
+  })  : _supabase = supabase ?? Supabase.instance.client,
+        _hive = hive ?? HiveService.instance;
 
   /// Get singleton instance
   static SyncService get instance {
@@ -134,7 +134,7 @@ class SyncService {
     required SyncOperationType operationType,
     required SyncEntityType entityType,
     required String entityId,
-    String? firestoreId,
+    String? supabaseId,
     required Map<String, dynamic> data,
   }) async {
     final operation = SyncOperation(
@@ -142,7 +142,7 @@ class SyncService {
       operationType: operationType.name.toUpperCase(),
       entityType: entityType.name.toUpperCase(),
       entityId: entityId,
-      firestoreId: firestoreId,
+      firestoreId: supabaseId, // Using firestoreId field for supabaseId (backward compatibility)
       data: data,
       retryCount: 0,
       createdAt: DateTime.now(),
@@ -213,7 +213,7 @@ class SyncService {
         if (result.success) {
           // Update transaction as synced using copyWith
           final updatedTransaction = transaction.copyWith(
-            firestoreId: result.firestoreId ?? transaction.firestoreId,
+            firestoreId: result.supabaseId ?? transaction.firestoreId,
             needsSync: false,
             syncedAt: DateTime.now(),
           );
@@ -232,43 +232,38 @@ class SyncService {
     }
   }
 
-  /// Sync a single transaction to Firestore
+  /// Sync a single transaction to Supabase
   Future<SyncResult> _syncTransaction(LocalTransaction transaction) async {
     try {
-      // Create document reference
-      final docRef = _firestore
-          .collection('stores')
-          .doc(transaction.storeId)
-          .collection('transactions')
-          .doc();
-
       // Generate proper receipt number
       final receiptNumber = await _generateReceiptNumber(transaction.storeId);
 
-      await docRef.set({
-        'storeId': transaction.storeId,
-        'locationId': transaction.locationId,
-        'receiptNumber': receiptNumber,
-        'customerId': transaction.customerId,
-        'customerName': transaction.customerName,
-        'staffId': transaction.staffId,
-        'staffName': transaction.staffName,
-        'items': transaction.items.map((e) => e.toJson()).toList(),
-        'subtotal': transaction.subtotal,
-        'taxRate': transaction.taxRate,
-        'tax': transaction.tax,
-        'total': transaction.total,
-        'paymentMethod': transaction.paymentMethod,
-        'amountReceived': transaction.amountReceived,
-        'change': transaction.change,
-        'createdAt': Timestamp.fromDate(transaction.createdAt),
-        'offlineCreatedAt': Timestamp.fromDate(transaction.createdAt),
-        'syncedAt': FieldValue.serverTimestamp(),
-      });
+      final response = await _supabase
+          .from('transactions')
+          .insert({
+            'store_id': transaction.storeId,
+            'location_id': transaction.locationId,
+            'receipt_number': receiptNumber,
+            'customer_id': transaction.customerId,
+            'customer_name': transaction.customerName,
+            'staff_id': transaction.staffId,
+            'staff_name': transaction.staffName,
+            'items': transaction.items.map((e) => e.toJson()).toList(),
+            'subtotal': transaction.subtotal,
+            'tax_rate': transaction.taxRate,
+            'tax': transaction.tax,
+            'total': transaction.total,
+            'payment_method': transaction.paymentMethod,
+            'amount_received': transaction.amountReceived,
+            'change': transaction.change,
+            'offline_created_at': transaction.createdAt.toIso8601String(),
+          })
+          .select()
+          .single();
 
       debugPrint('✅ Sync: Transaction synced with receipt $receiptNumber');
 
-      return SyncResult(success: true, firestoreId: docRef.id);
+      return SyncResult(success: true, supabaseId: response['id']);
     } catch (e) {
       return SyncResult(success: false, error: e.toString());
     }
@@ -277,17 +272,16 @@ class SyncService {
   /// Generate receipt number for synced transaction
   Future<String> _generateReceiptNumber(String storeId) async {
     final year = DateTime.now().year;
-    final yearStart = DateTime(year, 1, 1);
+    final yearStart = DateTime(year, 1, 1).toIso8601String();
 
-    final snapshot = await _firestore
-        .collection('stores')
-        .doc(storeId)
-        .collection('transactions')
-        .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(yearStart))
-        .count()
-        .get();
+    final response = await _supabase
+        .from('transactions')
+        .select('id')
+        .eq('store_id', storeId)
+        .gte('created_at', yearStart);
 
-    final sequenceNumber = (snapshot.count ?? 0) + 1;
+    final count = (response as List).length;
+    final sequenceNumber = count + 1;
     return 'INV-$year-${sequenceNumber.toString().padLeft(4, '0')}';
   }
 
@@ -301,7 +295,7 @@ class SyncService {
         if (result.success) {
           // Update stock history as synced using copyWith
           final updatedHistory = history.copyWith(
-            firestoreId: result.firestoreId ?? history.firestoreId,
+            firestoreId: result.supabaseId ?? history.firestoreId,
             needsSync: false,
             syncedAt: DateTime.now(),
           );
@@ -330,39 +324,40 @@ class SyncService {
         return SyncResult(success: false, error: 'Product not found');
       }
 
-      final docRef = _firestore
-          .collection('stores')
-          .doc(product.storeId)
-          .collection('stockHistory')
-          .doc();
+      final response = await _supabase
+          .from('stock_history')
+          .insert({
+            'product_id': history.productId,
+            'product_name': history.productName,
+            'location_id': history.locationId,
+            'location_name': history.locationName,
+            'quantity_added': history.quantityAdded,
+            'previous_stock': history.previousStock,
+            'new_stock': history.newStock,
+            'notes': history.notes,
+            'user_id': history.userId,
+            'user_name': history.userName,
+            'store_id': product.storeId,
+          })
+          .select()
+          .single();
 
-      await docRef.set({
-        'productId': history.productId,
-        'productName': history.productName,
-        'locationId': history.locationId,
-        'locationName': history.locationName,
-        'quantityAdded': history.quantityAdded,
-        'previousStock': history.previousStock,
-        'newStock': history.newStock,
-        'notes': history.notes,
-        'userId': history.userId,
-        'userName': history.userName,
-        'createdAt': Timestamp.fromDate(history.createdAt),
-        'syncedAt': FieldValue.serverTimestamp(),
-      });
+      // Also update product stock in Supabase
+      final productData = await _supabase
+          .from('products')
+          .select('stock_by_location')
+          .eq('id', history.productId)
+          .single();
 
-      // Also update product stock in Firestore
-      await _firestore
-          .collection('stores')
-          .doc(product.storeId)
-          .collection('products')
-          .doc(history.productId)
-          .update({
-        'stockByLocation.${history.locationId}': history.newStock,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+      final stockByLocation = Map<String, dynamic>.from(productData['stock_by_location'] ?? {});
+      stockByLocation[history.locationId] = history.newStock;
 
-      return SyncResult(success: true, firestoreId: docRef.id);
+      await _supabase
+          .from('products')
+          .update({'stock_by_location': stockByLocation})
+          .eq('id', history.productId);
+
+      return SyncResult(success: true, supabaseId: response['id']);
     } catch (e) {
       return SyncResult(success: false, error: e.toString());
     }

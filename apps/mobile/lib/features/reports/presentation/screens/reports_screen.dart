@@ -2,7 +2,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../../core/theme/app_colors.dart';
 import '../../../../core/constants/app_constants.dart';
 import '../../../../shared/providers/store_provider.dart';
@@ -91,10 +91,10 @@ class TopProduct {
 /// Reports notifier
 class ReportsNotifier extends StateNotifier<ReportsState> {
   final Ref _ref;
-  final FirebaseFirestore _firestore;
+  final SupabaseClient _supabase;
 
   ReportsNotifier(this._ref)
-      : _firestore = FirebaseFirestore.instance,
+      : _supabase = Supabase.instance.client,
         super(ReportsState(
           startDate: DateTime.now(),
           endDate: DateTime.now(),
@@ -153,17 +153,16 @@ class ReportsNotifier extends StateNotifier<ReportsState> {
     state = state.copyWith(isLoading: true, error: null);
 
     try {
-      final snapshot = await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(store.id)
-          .collection(AppConstants.transactionsCollection)
-          .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(state.startDate))
-          .where('createdAt', isLessThanOrEqualTo: Timestamp.fromDate(state.endDate))
-          .orderBy('createdAt', descending: true)
-          .get();
+      final response = await _supabase
+          .from('transactions')
+          .select()
+          .eq('store_id', store.id)
+          .gte('created_at', state.startDate.toIso8601String())
+          .lte('created_at', state.endDate.toIso8601String())
+          .order('created_at', ascending: false);
 
-      final transactions = snapshot.docs
-          .map((doc) => SaleTransaction.fromFirestore(doc))
+      final transactions = (response as List)
+          .map((data) => SaleTransaction.fromSupabase(data))
           .toList();
 
       // Calculate metrics

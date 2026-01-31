@@ -77,8 +77,8 @@ class _RestockScreenState extends ConsumerState<RestockScreen> {
         locationName: location.name,
         quantityToAdd: int.parse(_quantityController.text),
         notes: _notesController.text.isEmpty ? null : _notesController.text.trim(),
-        userId: currentUser?.uid,
-        userName: userData?['firstName'] ?? 'Unknown',
+        userId: currentUser?.id,
+        userName: userData?['fullName'] ?? 'Unknown',
       );
 
       if (mounted) {

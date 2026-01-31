@@ -1,17 +1,17 @@
 import 'package:flutter/foundation.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/database/hive_service.dart';
 import '../../core/database/hive_models.dart';
 
 /// Service for initial data sync (first launch or login)
 class InitialSyncService {
-  final FirebaseFirestore _firestore;
+  final SupabaseClient _supabase;
   final HiveService _hive;
 
   InitialSyncService({
-    FirebaseFirestore? firestore,
+    SupabaseClient? supabase,
     HiveService? hive,
-  })  : _firestore = firestore ?? FirebaseFirestore.instance,
+  })  : _supabase = supabase ?? Supabase.instance.client,
         _hive = hive ?? HiveService.instance;
 
   /// Perform initial sync for a store
@@ -48,23 +48,22 @@ class InitialSyncService {
 
   /// Sync store data
   Future<void> _syncStoreData(String storeId) async {
-    final doc = await _firestore.collection('stores').doc(storeId).get();
+    final data = await _supabase
+        .from('stores')
+        .select()
+        .eq('id', storeId)
+        .single();
 
-    if (!doc.exists) {
-      throw Exception('Store not found: $storeId');
-    }
-
-    final data = doc.data()!;
     final store = LocalStore(
-      firestoreId: doc.id,
+      firestoreId: data['id'],
       name: data['name'] ?? '',
-      businessType: data['businessType'] ?? 'retail',
-      hasMultipleLocations: data['hasMultipleLocations'] ?? false,
+      businessType: data['business_type'] ?? 'retail',
+      hasMultipleLocations: data['has_multiple_locations'] ?? false,
       logo: data['logo'],
-      ownerId: data['ownerId'] ?? '',
+      ownerId: data['owner_id'] ?? '',
       settings: Map<String, dynamic>.from(data['settings'] ?? {}),
-      isActive: data['isActive'] ?? true,
-      createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
+      isActive: data['is_active'] ?? true,
+      createdAt: data['created_at'] != null ? DateTime.parse(data['created_at']) : null,
       lastSyncedAt: DateTime.now(),
     );
 
@@ -74,25 +73,23 @@ class InitialSyncService {
 
   /// Sync locations
   Future<void> _syncLocations(String storeId) async {
-    final snapshot = await _firestore
-        .collection('stores')
-        .doc(storeId)
-        .collection('locations')
-        .where('isActive', isEqualTo: true)
-        .get();
+    final response = await _supabase
+        .from('locations')
+        .select()
+        .eq('store_id', storeId)
+        .eq('is_active', true);
 
     final locations = <LocalStoreLocation>[];
-    for (final doc in snapshot.docs) {
-      final data = doc.data();
+    for (final data in (response as List)) {
       locations.add(LocalStoreLocation(
-        firestoreId: doc.id,
+        firestoreId: data['id'],
         storeId: storeId,
         name: data['name'] ?? '',
         address: data['address'] ?? '',
         phone: data['phone'] ?? '',
-        isDefault: data['isDefault'] ?? false,
-        isActive: data['isActive'] ?? true,
-        createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
+        isDefault: data['is_default'] ?? false,
+        isActive: data['is_active'] ?? true,
+        createdAt: data['created_at'] != null ? DateTime.parse(data['created_at']) : null,
         lastSyncedAt: DateTime.now(),
       ));
     }
@@ -103,39 +100,36 @@ class InitialSyncService {
 
   /// Sync products
   Future<void> _syncProducts(String storeId) async {
-    final snapshot = await _firestore
-        .collection('stores')
-        .doc(storeId)
-        .collection('products')
-        .get();
+    final response = await _supabase
+        .from('products')
+        .select()
+        .eq('store_id', storeId);
 
     final products = <LocalProduct>[];
-    for (final doc in snapshot.docs) {
-      final data = doc.data();
-
+    for (final data in (response as List)) {
       // Handle stockByLocation map
       Map<String, int> stockByLocation = {};
-      if (data['stockByLocation'] != null) {
-        final rawMap = data['stockByLocation'] as Map<String, dynamic>;
+      if (data['stock_by_location'] != null) {
+        final rawMap = data['stock_by_location'] as Map<String, dynamic>;
         stockByLocation = rawMap.map((key, value) => MapEntry(key, (value as num).toInt()));
       }
 
       final product = LocalProduct(
-        firestoreId: doc.id,
+        firestoreId: data['id'],
         storeId: storeId,
         name: data['name'] ?? '',
         description: data['description'],
         price: (data['price'] ?? 0).toDouble(),
         cost: data['cost']?.toDouble(),
         barcode: data['barcode'],
-        categoryId: data['categoryId'],
-        subcategoryId: data['subcategoryId'],
+        categoryId: data['category_id'],
+        subcategoryId: data['subcategory_id'],
         stockByLocation: stockByLocation,
-        lowStockThreshold: data['lowStockThreshold'],
+        lowStockThreshold: data['low_stock_threshold'],
         image: data['image'],
-        isActive: data['isActive'] ?? true,
-        createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
-        updatedAt: (data['updatedAt'] as Timestamp?)?.toDate(),
+        isActive: data['is_active'] ?? true,
+        createdAt: data['created_at'] != null ? DateTime.parse(data['created_at']) : null,
+        updatedAt: data['updated_at'] != null ? DateTime.parse(data['updated_at']) : null,
         lastSyncedAt: DateTime.now(),
         needsSync: false,
       );
@@ -149,22 +143,20 @@ class InitialSyncService {
 
   /// Sync categories
   Future<void> _syncCategories(String storeId) async {
-    final snapshot = await _firestore
-        .collection('stores')
-        .doc(storeId)
-        .collection('categories')
-        .get();
+    final response = await _supabase
+        .from('categories')
+        .select()
+        .eq('store_id', storeId);
 
     final categories = <LocalCategory>[];
-    for (final doc in snapshot.docs) {
-      final data = doc.data();
+    for (final data in (response as List)) {
       categories.add(LocalCategory(
-        firestoreId: doc.id,
+        firestoreId: data['id'],
         storeId: storeId,
         name: data['name'] ?? '',
-        parentId: data['parentId'],
-        order: data['order'] ?? 0,
-        createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
+        parentId: data['parent_id'],
+        order: data['sort_order'] ?? 0,
+        createdAt: data['created_at'] != null ? DateTime.parse(data['created_at']) : null,
         lastSyncedAt: DateTime.now(),
         needsSync: false,
       ));
@@ -176,20 +168,17 @@ class InitialSyncService {
 
   /// Sync recent transactions (last 30 days)
   Future<void> _syncRecentTransactions(String storeId) async {
-    final thirtyDaysAgo = DateTime.now().subtract(const Duration(days: 30));
+    final thirtyDaysAgo = DateTime.now().subtract(const Duration(days: 30)).toIso8601String();
 
-    final snapshot = await _firestore
-        .collection('stores')
-        .doc(storeId)
-        .collection('transactions')
-        .where('createdAt', isGreaterThanOrEqualTo: Timestamp.fromDate(thirtyDaysAgo))
-        .orderBy('createdAt', descending: true)
-        .limit(500) // Limit to prevent too much data
-        .get();
+    final response = await _supabase
+        .from('transactions')
+        .select()
+        .eq('store_id', storeId)
+        .gte('created_at', thirtyDaysAgo)
+        .order('created_at', ascending: false)
+        .limit(500); // Limit to prevent too much data
 
-    for (final doc in snapshot.docs) {
-      final data = doc.data();
-
+    for (final data in (response as List)) {
       // Parse items
       final itemsList = (data['items'] as List<dynamic>?)
               ?.map((item) => TransactionItemData.fromJson(Map<String, dynamic>.from(item)))
@@ -197,23 +186,23 @@ class InitialSyncService {
           [];
 
       final transaction = LocalTransaction(
-        firestoreId: doc.id,
+        firestoreId: data['id'],
         storeId: storeId,
-        locationId: data['locationId'] ?? '',
-        receiptNumber: data['receiptNumber'] ?? '',
-        customerId: data['customerId'],
-        customerName: data['customerName'],
-        staffId: data['staffId'] ?? '',
-        staffName: data['staffName'] ?? '',
+        locationId: data['location_id'] ?? '',
+        receiptNumber: data['receipt_number'] ?? '',
+        customerId: data['customer_id'],
+        customerName: data['customer_name'],
+        staffId: data['staff_id'] ?? '',
+        staffName: data['staff_name'] ?? '',
         items: itemsList,
         subtotal: (data['subtotal'] ?? 0).toDouble(),
-        taxRate: (data['taxRate'] ?? 0.12).toDouble(),
+        taxRate: (data['tax_rate'] ?? 0.12).toDouble(),
         tax: (data['tax'] ?? 0).toDouble(),
         total: (data['total'] ?? 0).toDouble(),
-        paymentMethod: data['paymentMethod'] ?? 'cash',
-        amountReceived: (data['amountReceived'] ?? 0).toDouble(),
+        paymentMethod: data['payment_method'] ?? 'cash',
+        amountReceived: (data['amount_received'] ?? 0).toDouble(),
         change: (data['change'] ?? 0).toDouble(),
-        createdAt: (data['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
+        createdAt: data['created_at'] != null ? DateTime.parse(data['created_at']) : DateTime.now(),
         isOfflineTransaction: false,
         needsSync: false,
         syncedAt: DateTime.now(),
@@ -222,7 +211,7 @@ class InitialSyncService {
       await _hive.saveTransaction(transaction);
     }
 
-    debugPrint('   ✓ ${snapshot.docs.length} transactions synced');
+    debugPrint('   ✓ ${(response as List).length} transactions synced');
   }
 
   /// Perform incremental sync (delta changes)
@@ -250,38 +239,35 @@ class InitialSyncService {
 
   /// Sync products updated since a given time
   Future<void> _syncProductsUpdatedSince(String storeId, DateTime since) async {
-    final snapshot = await _firestore
-        .collection('stores')
-        .doc(storeId)
-        .collection('products')
-        .where('updatedAt', isGreaterThan: Timestamp.fromDate(since))
-        .get();
+    final response = await _supabase
+        .from('products')
+        .select()
+        .eq('store_id', storeId)
+        .gt('updated_at', since.toIso8601String());
 
-    for (final doc in snapshot.docs) {
-      final data = doc.data();
-
+    for (final data in (response as List)) {
       Map<String, int> stockByLocation = {};
-      if (data['stockByLocation'] != null) {
-        final rawMap = data['stockByLocation'] as Map<String, dynamic>;
+      if (data['stock_by_location'] != null) {
+        final rawMap = data['stock_by_location'] as Map<String, dynamic>;
         stockByLocation = rawMap.map((key, value) => MapEntry(key, (value as num).toInt()));
       }
 
       final product = LocalProduct(
-        firestoreId: doc.id,
+        firestoreId: data['id'],
         storeId: storeId,
         name: data['name'] ?? '',
         description: data['description'],
         price: (data['price'] ?? 0).toDouble(),
         cost: data['cost']?.toDouble(),
         barcode: data['barcode'],
-        categoryId: data['categoryId'],
-        subcategoryId: data['subcategoryId'],
+        categoryId: data['category_id'],
+        subcategoryId: data['subcategory_id'],
         stockByLocation: stockByLocation,
-        lowStockThreshold: data['lowStockThreshold'],
+        lowStockThreshold: data['low_stock_threshold'],
         image: data['image'],
-        isActive: data['isActive'] ?? true,
-        createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
-        updatedAt: (data['updatedAt'] as Timestamp?)?.toDate(),
+        isActive: data['is_active'] ?? true,
+        createdAt: data['created_at'] != null ? DateTime.parse(data['created_at']) : null,
+        updatedAt: data['updated_at'] != null ? DateTime.parse(data['updated_at']) : null,
         lastSyncedAt: DateTime.now(),
         needsSync: false,
       );
@@ -289,8 +275,8 @@ class InitialSyncService {
       await _hive.saveProduct(product);
     }
 
-    if (snapshot.docs.isNotEmpty) {
-      debugPrint('   ✓ ${snapshot.docs.length} products updated');
+    if ((response as List).isNotEmpty) {
+      debugPrint('   ✓ ${response.length} products updated');
     }
   }
 

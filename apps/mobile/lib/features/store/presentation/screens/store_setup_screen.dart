@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../../../core/theme/app_colors.dart';
-import '../../../../core/constants/app_constants.dart';
 import '../../../../shared/providers/auth_provider.dart';
 
 class StoreSetupScreen extends ConsumerStatefulWidget {
@@ -51,61 +50,60 @@ class _StoreSetupScreenState extends ConsumerState<StoreSetupScreen> {
       final user = ref.read(currentUserProvider);
       if (user == null) throw Exception('User not authenticated');
 
-      final firestore = FirebaseFirestore.instance;
-
-      // Create the store document
-      final storeRef = firestore.collection(AppConstants.storesCollection).doc();
+      final supabase = Supabase.instance.client;
 
       // Determine location name
       final locationName = _hasMultipleLocations
           ? _locationNameController.text.trim()
           : _storeNameController.text.trim(); // Use store name as location name for single location
 
-      await storeRef.set({
-        'id': storeRef.id,
-        'ownerId': user.uid,
-        'name': _storeNameController.text.trim(),
-        'businessType': _selectedBusinessType,
-        'hasMultipleLocations': _hasMultipleLocations,
-        'logo': null,
-        'settings': {
-          'currency': 'PHP',
-          'currencySymbol': '₱',
-          'taxRate': 0.12,
-          'receiptFooter': 'Thank you for your purchase!',
-        },
-        'isActive': true,
-        'createdAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+      // Create the store
+      final storeResponse = await supabase
+          .from('stores')
+          .insert({
+            'owner_id': user.id,
+            'name': _storeNameController.text.trim(),
+            'business_type': _selectedBusinessType,
+            'has_multiple_locations': _hasMultipleLocations,
+            'logo': null,
+            'settings': {
+              'currency': 'PHP',
+              'currencySymbol': '₱',
+              'taxRate': 0.12,
+              'receiptFooter': 'Thank you for your purchase!',
+            },
+            'is_active': true,
+          })
+          .select()
+          .single();
 
-      // Create the first location document
-      final locationRef = storeRef.collection('locations').doc();
-      await locationRef.set({
-        'id': locationRef.id,
-        'storeId': storeRef.id,
-        'name': locationName,
-        'address': _addressController.text.trim(),
-        'phone': '+63 ${_phoneController.text.trim()}',
-        'isDefault': true,
-        'isActive': true,
-        'createdAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+      final storeId = storeResponse['id'];
 
-      // Update user document with store and default location reference
-      // Using set with merge to handle cases where user doc might not exist
-      await firestore
-          .collection(AppConstants.usersCollection)
-          .doc(user.uid)
-          .set({
-        'uid': user.uid,
-        'email': user.email,
-        'storeId': storeRef.id,
-        'defaultLocationId': locationRef.id,
-        'hasCompletedSetup': true,
-        'updatedAt': FieldValue.serverTimestamp(),
-      }, SetOptions(merge: true));
+      // Create the first location
+      final locationResponse = await supabase
+          .from('locations')
+          .insert({
+            'store_id': storeId,
+            'name': locationName,
+            'address': _addressController.text.trim(),
+            'phone': '+63 ${_phoneController.text.trim()}',
+            'is_default': true,
+            'is_active': true,
+          })
+          .select()
+          .single();
+
+      final locationId = locationResponse['id'];
+
+      // Update user profile with store and default location reference
+      await supabase
+          .from('profiles')
+          .update({
+            'store_id': storeId,
+            'location_id': locationId,
+            'has_completed_setup': true,
+          })
+          .eq('id', user.id);
 
       // Refresh auth state to include new storeId
       await ref.read(authProvider.notifier).refreshUserData();

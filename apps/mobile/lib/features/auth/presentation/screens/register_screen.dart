@@ -44,7 +44,7 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
     final authState = ref.watch(authProvider);
 
     // Listen for authentication changes
-    ref.listen<AuthState>(authProvider, (previous, next) {
+    ref.listen<AppAuthState>(authProvider, (previous, next) {
       if (next.status == AuthStatus.authenticated) {
         context.go('/store-setup');
       } else if (next.error != null) {

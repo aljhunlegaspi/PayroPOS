@@ -1,7 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import '../../core/constants/app_constants.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/connectivity_service.dart';
 import '../services/offline_data_service.dart';
 import 'store_provider.dart';
@@ -60,53 +59,47 @@ class Product {
     return stock <= threshold;
   }
 
-  factory Product.fromFirestore(DocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>;
-
-    // Handle migration from old 'stock' field to new 'stockByLocation'
+  factory Product.fromSupabase(Map<String, dynamic> data) {
+    // Handle stockByLocation from JSONB
     Map<String, int> stockByLocation = {};
-    if (data['stockByLocation'] != null) {
-      final rawMap = data['stockByLocation'] as Map<String, dynamic>;
+    if (data['stock_by_location'] != null) {
+      final rawMap = data['stock_by_location'] as Map<String, dynamic>;
       stockByLocation = rawMap.map((key, value) => MapEntry(key, (value as num).toInt()));
-    } else if (data['stock'] != null) {
-      // Legacy: if old 'stock' field exists, we'll handle it in the UI
-      // For now, create empty map - stock will be set when editing
-      stockByLocation = {};
     }
 
     return Product(
-      id: doc.id,
-      storeId: data['storeId'] ?? '',
+      id: data['id'] ?? '',
+      storeId: data['store_id'] ?? '',
       name: data['name'] ?? '',
       description: data['description'],
       price: (data['price'] ?? 0).toDouble(),
       cost: data['cost']?.toDouble(),
       barcode: data['barcode'],
-      categoryId: data['categoryId'],
-      subcategoryId: data['subcategoryId'],
+      categoryId: data['category_id'],
+      subcategoryId: data['subcategory_id'],
       stockByLocation: stockByLocation,
-      lowStockThreshold: data['lowStockThreshold'],
+      lowStockThreshold: data['low_stock_threshold'],
       image: data['image'],
-      isActive: data['isActive'] ?? true,
-      createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
-      updatedAt: (data['updatedAt'] as Timestamp?)?.toDate(),
+      isActive: data['is_active'] ?? true,
+      createdAt: data['created_at'] != null ? DateTime.parse(data['created_at']) : null,
+      updatedAt: data['updated_at'] != null ? DateTime.parse(data['updated_at']) : null,
     );
   }
 
-  Map<String, dynamic> toMap() {
+  Map<String, dynamic> toSupabase() {
     return {
-      'storeId': storeId,
+      'store_id': storeId,
       'name': name,
       'description': description,
       'price': price,
       'cost': cost,
       'barcode': barcode,
-      'categoryId': categoryId,
-      'subcategoryId': subcategoryId,
-      'stockByLocation': stockByLocation,
-      'lowStockThreshold': lowStockThreshold,
+      'category_id': categoryId,
+      'subcategory_id': subcategoryId,
+      'stock_by_location': stockByLocation,
+      'low_stock_threshold': lowStockThreshold,
       'image': image,
-      'isActive': isActive,
+      'is_active': isActive,
     };
   }
 
@@ -176,24 +169,23 @@ class Category {
   /// Check if this is a subcategory
   bool get isSubcategory => parentId != null;
 
-  factory Category.fromFirestore(DocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>;
+  factory Category.fromSupabase(Map<String, dynamic> data) {
     return Category(
-      id: doc.id,
-      storeId: data['storeId'] ?? '',
+      id: data['id'] ?? '',
+      storeId: data['store_id'] ?? '',
       name: data['name'] ?? '',
-      parentId: data['parentId'],
-      order: data['order'] ?? 0,
-      createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
+      parentId: data['parent_id'],
+      order: data['sort_order'] ?? 0,
+      createdAt: data['created_at'] != null ? DateTime.parse(data['created_at']) : null,
     );
   }
 
-  Map<String, dynamic> toMap() {
+  Map<String, dynamic> toSupabase() {
     return {
-      'storeId': storeId,
+      'store_id': storeId,
       'name': name,
-      'parentId': parentId,
-      'order': order,
+      'parent_id': parentId,
+      'sort_order': order,
     };
   }
 }
@@ -240,13 +232,13 @@ class ProductState {
 
 // Product Notifier
 class ProductNotifier extends StateNotifier<ProductState> {
-  final FirebaseFirestore _firestore;
+  final SupabaseClient _supabase;
   final Ref _ref;
   String? _currentStoreId;
   OfflineDataService? _offlineService;
 
-  ProductNotifier(this._ref, {FirebaseFirestore? firestore})
-      : _firestore = firestore ?? FirebaseFirestore.instance,
+  ProductNotifier(this._ref, {SupabaseClient? supabase})
+      : _supabase = supabase ?? Supabase.instance.client,
         super(const ProductState()) {
     _init();
   }
@@ -295,17 +287,16 @@ class ProductNotifier extends StateNotifier<ProductState> {
       List<Product> products;
 
       if (_isOnline) {
-        // Online: fetch from Firestore and cache locally
-        debugPrint('📦 Loading products from Firestore (online)');
+        // Online: fetch from Supabase and cache locally
+        debugPrint('📦 Loading products from Supabase (online)');
 
-        final snapshot = await _firestore
-            .collection(AppConstants.storesCollection)
-            .doc(_currentStoreId)
-            .collection('products')
-            .get();
+        final response = await _supabase
+            .from('products')
+            .select()
+            .eq('store_id', _currentStoreId!);
 
-        products = snapshot.docs
-            .map((doc) => Product.fromFirestore(doc))
+        products = (response as List)
+            .map((data) => Product.fromSupabase(data))
             .toList();
 
         // Cache products locally for offline use
@@ -340,7 +331,7 @@ class ProductNotifier extends StateNotifier<ProductState> {
     }
   }
 
-  /// Force refresh products from Firestore
+  /// Force refresh products from Supabase
   Future<void> refreshProducts() async {
     debugPrint('🔄 Refreshing products...');
     await loadProducts();
@@ -353,15 +344,14 @@ class ProductNotifier extends StateNotifier<ProductState> {
       List<Category> categories;
 
       if (_isOnline) {
-        // Online: fetch from Firestore and cache locally
-        final snapshot = await _firestore
-            .collection(AppConstants.storesCollection)
-            .doc(_currentStoreId)
-            .collection('categories')
-            .get();
+        // Online: fetch from Supabase and cache locally
+        final response = await _supabase
+            .from('categories')
+            .select()
+            .eq('store_id', _currentStoreId!);
 
-        categories = snapshot.docs
-            .map((doc) => Category.fromFirestore(doc))
+        categories = (response as List)
+            .map((data) => Category.fromSupabase(data))
             .toList();
 
         // Cache categories locally
@@ -413,16 +403,8 @@ class ProductNotifier extends StateNotifier<ProductState> {
     try {
       state = state.copyWith(isLoading: true, error: null);
 
-      final docRef = _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(_currentStoreId)
-          .collection('products')
-          .doc();
-
-      debugPrint('📝 Creating product at: stores/$_currentStoreId/products/${docRef.id}');
-
       final product = Product(
-        id: docRef.id,
+        id: '', // Will be set by Supabase
         storeId: _currentStoreId!,
         name: name,
         description: description,
@@ -437,19 +419,21 @@ class ProductNotifier extends StateNotifier<ProductState> {
         isActive: true,
       );
 
-      await docRef.set({
-        ...product.toMap(),
-        'createdAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+      final response = await _supabase
+          .from('products')
+          .insert(product.toSupabase())
+          .select()
+          .single();
 
-      debugPrint('✅ Product added successfully: ${product.name} (${product.id})');
+      final newProduct = Product.fromSupabase(response);
+
+      debugPrint('✅ Product added successfully: ${newProduct.name} (${newProduct.id})');
 
       // Reload products
       debugPrint('🔄 Reloading products after add...');
       await loadProducts();
 
-      return product;
+      return newProduct;
     } catch (e) {
       debugPrint('❌ Error adding product: $e');
       state = state.copyWith(isLoading: false, error: e.toString());
@@ -466,18 +450,12 @@ class ProductNotifier extends StateNotifier<ProductState> {
       debugPrint('   Store ID: $_currentStoreId');
       debugPrint('   Stock by location: ${product.stockByLocation}');
 
-      final data = product.toMap();
-      data['updatedAt'] = FieldValue.serverTimestamp();
-      debugPrint('   Data to update: $data');
+      await _supabase
+          .from('products')
+          .update(product.toSupabase())
+          .eq('id', product.id);
 
-      await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(_currentStoreId)
-          .collection('products')
-          .doc(product.id)
-          .update(data);
-
-      debugPrint('✅ Product updated in Firestore: ${product.name}');
+      debugPrint('✅ Product updated in Supabase: ${product.name}');
 
       // Reload products
       debugPrint('🔄 Reloading products after update...');
@@ -498,15 +476,10 @@ class ProductNotifier extends StateNotifier<ProductState> {
       state = state.copyWith(isLoading: true, error: null);
 
       // Soft delete - set isActive to false
-      await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(_currentStoreId)
-          .collection('products')
-          .doc(productId)
-          .update({
-        'isActive': false,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+      await _supabase
+          .from('products')
+          .update({'is_active': false})
+          .eq('id', productId);
 
       debugPrint('✅ Product deleted (soft)');
 
@@ -524,17 +497,17 @@ class ProductNotifier extends StateNotifier<ProductState> {
 
     try {
       if (_isOnline) {
-        final snapshot = await _firestore
-            .collection(AppConstants.storesCollection)
-            .doc(_currentStoreId)
-            .collection('products')
-            .where('barcode', isEqualTo: barcode)
-            .where('isActive', isEqualTo: true)
+        final response = await _supabase
+            .from('products')
+            .select()
+            .eq('store_id', _currentStoreId!)
+            .eq('barcode', barcode)
+            .eq('is_active', true)
             .limit(1)
-            .get();
+            .maybeSingle();
 
-        if (snapshot.docs.isNotEmpty) {
-          return Product.fromFirestore(snapshot.docs.first);
+        if (response != null) {
+          return Product.fromSupabase(response);
         }
       }
 
@@ -555,23 +528,20 @@ class ProductNotifier extends StateNotifier<ProductState> {
       final sameLevelCategories = state.categories.where((c) => c.parentId == parentId);
       final order = sameLevelCategories.length;
 
-      final docRef = _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(_currentStoreId)
-          .collection('categories')
-          .doc();
-
-      await docRef.set({
-        'storeId': _currentStoreId,
-        'name': name,
-        'parentId': parentId,
-        'order': order,
-        'createdAt': FieldValue.serverTimestamp(),
-      });
+      final response = await _supabase
+          .from('categories')
+          .insert({
+            'store_id': _currentStoreId,
+            'name': name,
+            'parent_id': parentId,
+            'sort_order': order,
+          })
+          .select()
+          .single();
 
       await loadCategories();
 
-      return state.categories.firstWhere((c) => c.id == docRef.id);
+      return Category.fromSupabase(response);
     } catch (e) {
       debugPrint('❌ Error adding category: $e');
       rethrow;
@@ -587,15 +557,10 @@ class ProductNotifier extends StateNotifier<ProductState> {
     if (_currentStoreId == null) throw Exception('No store selected');
 
     try {
-      await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(_currentStoreId)
-          .collection('categories')
-          .doc(categoryId)
-          .update({
-        'name': name,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+      await _supabase
+          .from('categories')
+          .update({'name': name})
+          .eq('id', categoryId);
 
       debugPrint('✅ Category updated: $name');
       await loadCategories();
@@ -617,32 +582,26 @@ class ProductNotifier extends StateNotifier<ProductState> {
       for (final catId in allCategoryIds) {
         final productsWithCategory = state.products.where((p) => p.categoryId == catId);
         for (final product in productsWithCategory) {
-          await _firestore
-              .collection(AppConstants.storesCollection)
-              .doc(_currentStoreId)
-              .collection('products')
-              .doc(product.id)
-              .update({'categoryId': null, 'subcategoryId': null});
+          await _supabase
+              .from('products')
+              .update({'category_id': null, 'subcategory_id': null})
+              .eq('id', product.id);
         }
       }
 
       // Delete all subcategories first
       for (final subcategory in subcategories) {
-        await _firestore
-            .collection(AppConstants.storesCollection)
-            .doc(_currentStoreId)
-            .collection('categories')
-            .doc(subcategory.id)
-            .delete();
+        await _supabase
+            .from('categories')
+            .delete()
+            .eq('id', subcategory.id);
       }
 
       // Delete the main category
-      await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(_currentStoreId)
-          .collection('categories')
-          .doc(categoryId)
-          .delete();
+      await _supabase
+          .from('categories')
+          .delete()
+          .eq('id', categoryId);
 
       debugPrint('✅ Category and ${subcategories.length} subcategories deleted');
       await loadCategories();
@@ -667,19 +626,13 @@ class ProductNotifier extends StateNotifier<ProductState> {
       final movedCategory = categories.removeAt(oldIndex);
       categories.insert(newIndex, movedCategory);
 
-      // Update order in Firestore
-      final batch = _firestore.batch();
+      // Update order in Supabase one by one
       for (int i = 0; i < categories.length; i++) {
-        batch.update(
-          _firestore
-              .collection(AppConstants.storesCollection)
-              .doc(_currentStoreId)
-              .collection('categories')
-              .doc(categories[i].id),
-          {'order': i},
-        );
+        await _supabase
+            .from('categories')
+            .update({'sort_order': i})
+            .eq('id', categories[i].id);
       }
-      await batch.commit();
 
       debugPrint('✅ Categories reordered');
       await loadCategories();

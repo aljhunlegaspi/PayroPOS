@@ -40,7 +40,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     final screenHeight = MediaQuery.of(context).size.height;
 
     // Listen for authentication changes
-    ref.listen<AuthState>(authProvider, (previous, next) {
+    ref.listen<AppAuthState>(authProvider, (previous, next) {
       if (next.status == AuthStatus.authenticated) {
         context.go('/home');
       } else if (next.error != null) {

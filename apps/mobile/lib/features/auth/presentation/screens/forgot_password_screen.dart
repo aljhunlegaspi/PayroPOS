@@ -43,7 +43,7 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
     final authState = ref.watch(authProvider);
 
     // Listen for errors
-    ref.listen<AuthState>(authProvider, (previous, next) {
+    ref.listen<AppAuthState>(authProvider, (previous, next) {
       if (next.error != null) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -73,7 +73,7 @@ class _ForgotPasswordScreenState extends ConsumerState<ForgotPasswordScreen> {
     );
   }
 
-  Widget _buildFormContent(AuthState authState) {
+  Widget _buildFormContent(AppAuthState authState) {
     return Form(
       key: _formKey,
       child: Column(

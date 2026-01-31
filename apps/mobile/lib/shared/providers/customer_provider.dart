@@ -1,7 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import '../../core/constants/app_constants.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'store_provider.dart';
 
 /// Customer Model
@@ -30,32 +29,30 @@ class Customer {
     this.updatedAt,
   });
 
-  factory Customer.fromFirestore(DocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>;
+  factory Customer.fromSupabase(Map<String, dynamic> data) {
     return Customer(
-      id: doc.id,
-      storeId: data['storeId'] ?? '',
+      id: data['id'] ?? '',
+      storeId: data['store_id'] ?? '',
       name: data['name'] ?? '',
       phone: data['phone'],
       email: data['email'],
       address: data['address'],
-      creditBalance: (data['creditBalance'] ?? 0).toDouble(),
-      creditLimit: (data['creditLimit'] ?? 0).toDouble(),
-      createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
-      updatedAt: (data['updatedAt'] as Timestamp?)?.toDate(),
+      creditBalance: (data['credit_balance'] ?? 0).toDouble(),
+      creditLimit: (data['credit_limit'] ?? 0).toDouble(),
+      createdAt: data['created_at'] != null ? DateTime.parse(data['created_at']) : null,
+      updatedAt: data['updated_at'] != null ? DateTime.parse(data['updated_at']) : null,
     );
   }
 
-  Map<String, dynamic> toMap() {
+  Map<String, dynamic> toSupabase() {
     return {
-      'storeId': storeId,
+      'store_id': storeId,
       'name': name,
       'phone': phone,
       'email': email,
       'address': address,
-      'creditBalance': creditBalance,
-      'creditLimit': creditLimit,
-      'updatedAt': FieldValue.serverTimestamp(),
+      'credit_balance': creditBalance,
+      'credit_limit': creditLimit,
     };
   }
 
@@ -127,33 +124,31 @@ class CreditTransaction {
     required this.createdAt,
   });
 
-  factory CreditTransaction.fromFirestore(DocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>;
+  factory CreditTransaction.fromSupabase(Map<String, dynamic> data) {
     return CreditTransaction(
-      id: doc.id,
-      customerId: data['customerId'] ?? '',
-      storeId: data['storeId'] ?? '',
-      transactionId: data['transactionId'],
+      id: data['id'] ?? '',
+      customerId: data['customer_id'] ?? '',
+      storeId: data['store_id'] ?? '',
+      transactionId: data['transaction_id'],
       amount: (data['amount'] ?? 0).toDouble(),
       type: data['type'] ?? 'adjustment',
       notes: data['notes'],
-      staffId: data['staffId'] ?? '',
-      staffName: data['staffName'] ?? '',
-      createdAt: (data['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      staffId: data['staff_id'] ?? '',
+      staffName: data['staff_name'] ?? '',
+      createdAt: data['created_at'] != null ? DateTime.parse(data['created_at']) : DateTime.now(),
     );
   }
 
-  Map<String, dynamic> toMap() {
+  Map<String, dynamic> toSupabase() {
     return {
-      'customerId': customerId,
-      'storeId': storeId,
-      'transactionId': transactionId,
+      'customer_id': customerId,
+      'store_id': storeId,
+      'transaction_id': transactionId,
       'amount': amount,
       'type': type,
       'notes': notes,
-      'staffId': staffId,
-      'staffName': staffName,
-      'createdAt': FieldValue.serverTimestamp(),
+      'staff_id': staffId,
+      'staff_name': staffName,
     };
   }
 }
@@ -202,11 +197,11 @@ class CustomerState {
 /// Customer Notifier
 class CustomerNotifier extends StateNotifier<CustomerState> {
   final Ref _ref;
-  final FirebaseFirestore _firestore;
+  final SupabaseClient _supabase;
   String? _currentStoreId;
 
-  CustomerNotifier(this._ref)
-      : _firestore = FirebaseFirestore.instance,
+  CustomerNotifier(this._ref, {SupabaseClient? supabase})
+      : _supabase = supabase ?? Supabase.instance.client,
         super(const CustomerState()) {
     _init();
   }
@@ -226,15 +221,14 @@ class CustomerNotifier extends StateNotifier<CustomerState> {
     state = state.copyWith(isLoading: true, error: null);
 
     try {
-      final snapshot = await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(_currentStoreId)
-          .collection('customers')
-          .orderBy('name')
-          .get();
+      final response = await _supabase
+          .from('customers')
+          .select()
+          .eq('store_id', _currentStoreId!)
+          .order('name');
 
-      final customers = snapshot.docs
-          .map((doc) => Customer.fromFirestore(doc))
+      final customers = (response as List)
+          .map((data) => Customer.fromSupabase(data))
           .toList();
 
       state = state.copyWith(
@@ -260,28 +254,21 @@ class CustomerNotifier extends StateNotifier<CustomerState> {
     if (_currentStoreId == null) return null;
 
     try {
-      final docRef = _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(_currentStoreId)
-          .collection('customers')
-          .doc();
+      final response = await _supabase
+          .from('customers')
+          .insert({
+            'store_id': _currentStoreId,
+            'name': name,
+            'phone': phone,
+            'email': email,
+            'address': address,
+            'credit_limit': creditLimit,
+            'credit_balance': 0,
+          })
+          .select()
+          .single();
 
-      final customer = Customer(
-        id: docRef.id,
-        storeId: _currentStoreId!,
-        name: name,
-        phone: phone,
-        email: email,
-        address: address,
-        creditLimit: creditLimit,
-        createdAt: DateTime.now(),
-      );
-
-      await docRef.set({
-        ...customer.toMap(),
-        'createdAt': FieldValue.serverTimestamp(),
-      });
-
+      final customer = Customer.fromSupabase(response);
       await loadCustomers();
       return customer;
     } catch (e) {
@@ -295,12 +282,10 @@ class CustomerNotifier extends StateNotifier<CustomerState> {
     if (_currentStoreId == null) return false;
 
     try {
-      await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(_currentStoreId)
-          .collection('customers')
-          .doc(customer.id)
-          .update(customer.toMap());
+      await _supabase
+          .from('customers')
+          .update(customer.toSupabase())
+          .eq('id', customer.id);
 
       await loadCustomers();
       return true;
@@ -315,12 +300,10 @@ class CustomerNotifier extends StateNotifier<CustomerState> {
     if (_currentStoreId == null) return false;
 
     try {
-      await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(_currentStoreId)
-          .collection('customers')
-          .doc(customerId)
-          .delete();
+      await _supabase
+          .from('customers')
+          .delete()
+          .eq('id', customerId);
 
       await loadCustomers();
       return true;
@@ -343,40 +326,36 @@ class CustomerNotifier extends StateNotifier<CustomerState> {
     if (_currentStoreId == null) return false;
 
     try {
-      final batch = _firestore.batch();
+      // Get current customer balance
+      final customerData = await _supabase
+          .from('customers')
+          .select('credit_balance')
+          .eq('id', customerId)
+          .single();
+
+      final currentBalance = (customerData['credit_balance'] ?? 0).toDouble();
+      final newBalance = currentBalance + amount;
 
       // Update customer balance
-      final customerRef = _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(_currentStoreId)
-          .collection('customers')
-          .doc(customerId);
-
-      batch.update(customerRef, {
-        'creditBalance': FieldValue.increment(amount),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+      await _supabase
+          .from('customers')
+          .update({'credit_balance': newBalance})
+          .eq('id', customerId);
 
       // Add credit transaction record
-      final creditRef = _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(_currentStoreId)
-          .collection('credit_transactions')
-          .doc();
+      await _supabase
+          .from('credit_transactions')
+          .insert({
+            'customer_id': customerId,
+            'store_id': _currentStoreId,
+            'transaction_id': transactionId,
+            'amount': amount,
+            'type': 'sale_credit',
+            'notes': notes,
+            'staff_id': staffId,
+            'staff_name': staffName,
+          });
 
-      batch.set(creditRef, {
-        'customerId': customerId,
-        'storeId': _currentStoreId,
-        'transactionId': transactionId,
-        'amount': amount,
-        'type': 'sale_credit',
-        'notes': notes,
-        'staffId': staffId,
-        'staffName': staffName,
-        'createdAt': FieldValue.serverTimestamp(),
-      });
-
-      await batch.commit();
       await loadCustomers();
       return true;
     } catch (e) {
@@ -397,39 +376,35 @@ class CustomerNotifier extends StateNotifier<CustomerState> {
     if (_currentStoreId == null) return false;
 
     try {
-      final batch = _firestore.batch();
+      // Get current customer balance
+      final customerData = await _supabase
+          .from('customers')
+          .select('credit_balance')
+          .eq('id', customerId)
+          .single();
+
+      final currentBalance = (customerData['credit_balance'] ?? 0).toDouble();
+      final newBalance = currentBalance - amount;
 
       // Update customer balance (negative because they're paying)
-      final customerRef = _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(_currentStoreId)
-          .collection('customers')
-          .doc(customerId);
-
-      batch.update(customerRef, {
-        'creditBalance': FieldValue.increment(-amount),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+      await _supabase
+          .from('customers')
+          .update({'credit_balance': newBalance})
+          .eq('id', customerId);
 
       // Add credit transaction record
-      final creditRef = _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(_currentStoreId)
-          .collection('credit_transactions')
-          .doc();
+      await _supabase
+          .from('credit_transactions')
+          .insert({
+            'customer_id': customerId,
+            'store_id': _currentStoreId,
+            'amount': -amount, // Negative = payment received
+            'type': 'payment',
+            'notes': notes,
+            'staff_id': staffId,
+            'staff_name': staffName,
+          });
 
-      batch.set(creditRef, {
-        'customerId': customerId,
-        'storeId': _currentStoreId,
-        'amount': -amount, // Negative = payment received
-        'type': 'payment',
-        'notes': notes,
-        'staffId': staffId,
-        'staffName': staffName,
-        'createdAt': FieldValue.serverTimestamp(),
-      });
-
-      await batch.commit();
       await loadCustomers();
       return true;
     } catch (e) {
@@ -444,17 +419,15 @@ class CustomerNotifier extends StateNotifier<CustomerState> {
     if (_currentStoreId == null) return;
 
     try {
-      final snapshot = await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(_currentStoreId)
-          .collection('credit_transactions')
-          .where('customerId', isEqualTo: customerId)
-          .orderBy('createdAt', descending: true)
-          .limit(50)
-          .get();
+      final response = await _supabase
+          .from('credit_transactions')
+          .select()
+          .eq('customer_id', customerId)
+          .order('created_at', ascending: false)
+          .limit(50);
 
-      final history = snapshot.docs
-          .map((doc) => CreditTransaction.fromFirestore(doc))
+      final history = (response as List)
+          .map((data) => CreditTransaction.fromSupabase(data))
           .toList();
 
       state = state.copyWith(creditHistory: history);

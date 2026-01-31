@@ -31,8 +31,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final fullName = userData?['fullName'];
     if (fullName != null && fullName.toString().isNotEmpty) {
       firstName = fullName.toString().split(' ').first;
-    } else if (authState.user?.displayName != null && authState.user!.displayName!.isNotEmpty) {
-      firstName = authState.user!.displayName!.split(' ').first;
+    } else if (authState.user?.userMetadata?['full_name'] != null) {
+      firstName = authState.user!.userMetadata!['full_name'].toString().split(' ').first;
     } else if (authState.user?.email != null) {
       firstName = authState.user!.email!.split('@').first;
     }

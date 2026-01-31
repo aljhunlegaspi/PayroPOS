@@ -38,7 +38,7 @@ class _ReceiptScreenState extends ConsumerState<ReceiptScreen> {
       return;
     }
 
-    // Otherwise fetch from Firestore
+    // Otherwise fetch from Supabase
     final transaction = await ref.read(transactionProvider.notifier).getTransaction(widget.transactionId);
     setState(() {
       _transaction = transaction;

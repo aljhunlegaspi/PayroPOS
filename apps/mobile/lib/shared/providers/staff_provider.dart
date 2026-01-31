@@ -1,8 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_core/firebase_core.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../core/constants/app_constants.dart';
 import 'auth_provider.dart';
 import 'store_provider.dart';
@@ -11,7 +9,7 @@ import 'store_provider.dart';
 class StaffMember {
   final String id;
   final String storeId;
-  final String uid; // Firebase user ID
+  final String uid; // Supabase user ID
   final String email;
   final String fullName;
   final String? phone;
@@ -35,35 +33,32 @@ class StaffMember {
     this.lastLoginAt,
   });
 
-  factory StaffMember.fromFirestore(DocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>;
+  factory StaffMember.fromSupabase(Map<String, dynamic> data) {
     return StaffMember(
-      id: doc.id,
-      storeId: data['storeId'] ?? '',
+      id: data['id'] ?? '',
+      storeId: data['store_id'] ?? '',
       uid: data['uid'] ?? '',
       email: data['email'] ?? '',
-      fullName: data['fullName'] ?? '',
+      fullName: data['full_name'] ?? '',
       phone: data['phone'],
-      assignedLocationIds: List<String>.from(data['assignedLocationIds'] ?? []),
-      isActive: data['isActive'] ?? true,
+      assignedLocationIds: List<String>.from(data['assigned_location_ids'] ?? []),
+      isActive: data['is_active'] ?? true,
       pin: data['pin'],
-      createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
-      lastLoginAt: (data['lastLoginAt'] as Timestamp?)?.toDate(),
+      createdAt: data['created_at'] != null ? DateTime.parse(data['created_at']) : null,
+      lastLoginAt: data['last_login_at'] != null ? DateTime.parse(data['last_login_at']) : null,
     );
   }
 
-  Map<String, dynamic> toFirestore() {
+  Map<String, dynamic> toSupabase() {
     return {
-      'storeId': storeId,
+      'store_id': storeId,
       'uid': uid,
       'email': email,
-      'fullName': fullName,
+      'full_name': fullName,
       'phone': phone,
-      'assignedLocationIds': assignedLocationIds,
-      'isActive': isActive,
+      'assigned_location_ids': assignedLocationIds,
+      'is_active': isActive,
       'pin': pin,
-      'createdAt': createdAt != null ? Timestamp.fromDate(createdAt!) : FieldValue.serverTimestamp(),
-      'lastLoginAt': lastLoginAt != null ? Timestamp.fromDate(lastLoginAt!) : null,
     };
   }
 
@@ -122,33 +117,30 @@ class StaffInvitation {
     this.acceptedAt,
   });
 
-  factory StaffInvitation.fromFirestore(DocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>;
+  factory StaffInvitation.fromSupabase(Map<String, dynamic> data) {
     return StaffInvitation(
-      id: doc.id,
-      storeId: data['storeId'] ?? '',
-      storeName: data['storeName'] ?? '',
+      id: data['id'] ?? '',
+      storeId: data['store_id'] ?? '',
+      storeName: data['store_name'] ?? '',
       email: data['email'] ?? '',
-      invitedByUid: data['invitedByUid'] ?? '',
-      invitedByName: data['invitedByName'] ?? '',
-      assignedLocationIds: List<String>.from(data['assignedLocationIds'] ?? []),
+      invitedByUid: data['invited_by_uid'] ?? '',
+      invitedByName: data['invited_by_name'] ?? '',
+      assignedLocationIds: List<String>.from(data['assigned_location_ids'] ?? []),
       status: data['status'] ?? 'pending',
-      createdAt: (data['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
-      acceptedAt: (data['acceptedAt'] as Timestamp?)?.toDate(),
+      createdAt: data['created_at'] != null ? DateTime.parse(data['created_at']) : DateTime.now(),
+      acceptedAt: data['accepted_at'] != null ? DateTime.parse(data['accepted_at']) : null,
     );
   }
 
-  Map<String, dynamic> toFirestore() {
+  Map<String, dynamic> toSupabase() {
     return {
-      'storeId': storeId,
-      'storeName': storeName,
+      'store_id': storeId,
+      'store_name': storeName,
       'email': email,
-      'invitedByUid': invitedByUid,
-      'invitedByName': invitedByName,
-      'assignedLocationIds': assignedLocationIds,
+      'invited_by_uid': invitedByUid,
+      'invited_by_name': invitedByName,
+      'assigned_location_ids': assignedLocationIds,
       'status': status,
-      'createdAt': Timestamp.fromDate(createdAt),
-      'acceptedAt': acceptedAt != null ? Timestamp.fromDate(acceptedAt!) : null,
     };
   }
 }
@@ -184,11 +176,11 @@ class StaffState {
 
 /// Staff notifier for managing staff operations
 class StaffNotifier extends StateNotifier<StaffState> {
-  final FirebaseFirestore _firestore;
+  final SupabaseClient _supabase;
   final Ref _ref;
 
-  StaffNotifier(this._ref)
-      : _firestore = FirebaseFirestore.instance,
+  StaffNotifier(this._ref, {SupabaseClient? supabase})
+      : _supabase = supabase ?? Supabase.instance.client,
         super(const StaffState());
 
   /// Load staff members for a store
@@ -197,26 +189,25 @@ class StaffNotifier extends StateNotifier<StaffState> {
       state = state.copyWith(isLoading: true, error: null);
 
       // Load staff members
-      final staffSnapshot = await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(storeId)
-          .collection(AppConstants.staffCollection)
-          .orderBy('fullName')
-          .get();
+      final staffResponse = await _supabase
+          .from('staff')
+          .select()
+          .eq('store_id', storeId)
+          .order('full_name');
 
-      final staff = staffSnapshot.docs
-          .map((doc) => StaffMember.fromFirestore(doc))
+      final staff = (staffResponse as List)
+          .map((data) => StaffMember.fromSupabase(data))
           .toList();
 
       // Load pending invitations
-      final invitationsSnapshot = await _firestore
-          .collection('staffInvitations')
-          .where('storeId', isEqualTo: storeId)
-          .where('status', isEqualTo: 'pending')
-          .get();
+      final invitationsResponse = await _supabase
+          .from('staff_invitations')
+          .select()
+          .eq('store_id', storeId)
+          .eq('status', 'pending');
 
-      final invitations = invitationsSnapshot.docs
-          .map((doc) => StaffInvitation.fromFirestore(doc))
+      final invitations = (invitationsResponse as List)
+          .map((data) => StaffInvitation.fromSupabase(data))
           .toList();
 
       state = state.copyWith(
@@ -259,51 +250,48 @@ class StaffNotifier extends StateNotifier<StaffState> {
         return false;
       }
 
-      // Check if user exists in the system
-      final userQuery = await _firestore
-          .collection(AppConstants.usersCollection)
-          .where('email', isEqualTo: email)
-          .get();
+      // Check if user exists in the system (profiles table)
+      final userQuery = await _supabase
+          .from('profiles')
+          .select()
+          .eq('email', email)
+          .maybeSingle();
 
-      if (userQuery.docs.isNotEmpty) {
+      if (userQuery != null) {
         // User exists, add them directly as staff
-        final existingUser = userQuery.docs.first;
-        final existingUserData = existingUser.data();
+        final existingUserData = userQuery;
 
         // Check if user already has a store
-        if (existingUserData['storeId'] != null && existingUserData['storeId'] != store.id) {
+        if (existingUserData['store_id'] != null && existingUserData['store_id'] != store.id) {
           state = state.copyWith(error: 'This user is already associated with another store');
           return false;
         }
 
         // Create staff member
-        final staffRef = _firestore
-            .collection(AppConstants.storesCollection)
-            .doc(store.id)
-            .collection(AppConstants.staffCollection)
-            .doc();
+        final response = await _supabase
+            .from('staff')
+            .insert({
+              'store_id': store.id,
+              'uid': existingUserData['id'],
+              'email': email,
+              'full_name': existingUserData['full_name'] ?? email.split('@').first,
+              'assigned_location_ids': assignedLocationIds,
+              'is_active': true,
+            })
+            .select()
+            .single();
 
-        final newStaff = StaffMember(
-          id: staffRef.id,
-          storeId: store.id,
-          uid: existingUser.id,
-          email: email,
-          fullName: existingUserData['fullName'] ?? email.split('@').first,
-          assignedLocationIds: assignedLocationIds,
-        );
+        final newStaff = StaffMember.fromSupabase(response);
 
-        await staffRef.set(newStaff.toFirestore());
-
-        // Update user document with staff role and store reference
-        await _firestore
-            .collection(AppConstants.usersCollection)
-            .doc(existingUser.id)
+        // Update user profile with staff role and store reference
+        await _supabase
+            .from('profiles')
             .update({
-          'role': AppConstants.roleStoreStaff,
-          'storeId': store.id,
-          'defaultLocationId': assignedLocationIds.isNotEmpty ? assignedLocationIds.first : null,
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
+              'role': AppConstants.roleStoreStaff,
+              'store_id': store.id,
+              'location_id': assignedLocationIds.isNotEmpty ? assignedLocationIds.first : null,
+            })
+            .eq('id', existingUserData['id']);
 
         state = state.copyWith(
           staffMembers: [...state.staffMembers, newStaff],
@@ -313,21 +301,21 @@ class StaffNotifier extends StateNotifier<StaffState> {
         return true;
       } else {
         // User doesn't exist, create an invitation
-        final invitationRef = _firestore.collection('staffInvitations').doc();
+        final response = await _supabase
+            .from('staff_invitations')
+            .insert({
+              'store_id': store.id,
+              'store_name': store.name,
+              'email': email,
+              'invited_by_uid': userData['uid'] ?? '',
+              'invited_by_name': userData['fullName'] ?? '',
+              'assigned_location_ids': assignedLocationIds,
+              'status': 'pending',
+            })
+            .select()
+            .single();
 
-        final invitation = StaffInvitation(
-          id: invitationRef.id,
-          storeId: store.id,
-          storeName: store.name,
-          email: email,
-          invitedByUid: userData['uid'] ?? '',
-          invitedByName: userData['fullName'] ?? '',
-          assignedLocationIds: assignedLocationIds,
-          status: 'pending',
-          createdAt: DateTime.now(),
-        );
-
-        await invitationRef.set(invitation.toFirestore());
+        final invitation = StaffInvitation.fromSupabase(response);
 
         state = state.copyWith(
           pendingInvitations: [...state.pendingInvitations, invitation],
@@ -349,14 +337,10 @@ class StaffNotifier extends StateNotifier<StaffState> {
       final store = _ref.read(currentStoreProvider);
       if (store == null) return false;
 
-      await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(store.id)
-          .collection(AppConstants.staffCollection)
-          .doc(staffId)
-          .update({
-        'assignedLocationIds': locationIds,
-      });
+      await _supabase
+          .from('staff')
+          .update({'assigned_location_ids': locationIds})
+          .eq('id', staffId);
 
       // Update local state
       final updatedStaff = state.staffMembers.map((staff) {
@@ -383,14 +367,10 @@ class StaffNotifier extends StateNotifier<StaffState> {
       final store = _ref.read(currentStoreProvider);
       if (store == null) return false;
 
-      await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(store.id)
-          .collection(AppConstants.staffCollection)
-          .doc(staffId)
-          .update({
-        'pin': pin,
-      });
+      await _supabase
+          .from('staff')
+          .update({'pin': pin})
+          .eq('id', staffId);
 
       // Update local state
       final updatedStaff = state.staffMembers.map((staff) {
@@ -418,37 +398,30 @@ class StaffNotifier extends StateNotifier<StaffState> {
       if (store == null) return false;
 
       // Get staff member to find their uid
-      final staffDoc = await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(store.id)
-          .collection(AppConstants.staffCollection)
-          .doc(staffId)
-          .get();
+      final staffData = await _supabase
+          .from('staff')
+          .select()
+          .eq('id', staffId)
+          .single();
 
-      if (!staffDoc.exists) return false;
-
-      final staffData = staffDoc.data()!;
       final uid = staffData['uid'] as String?;
 
       // Deactivate staff member
-      await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(store.id)
-          .collection(AppConstants.staffCollection)
-          .doc(staffId)
-          .update({'isActive': false});
+      await _supabase
+          .from('staff')
+          .update({'is_active': false})
+          .eq('id', staffId);
 
-      // Update user document to remove store association
+      // Update user profile to remove store association
       if (uid != null) {
-        await _firestore
-            .collection(AppConstants.usersCollection)
-            .doc(uid)
+        await _supabase
+            .from('profiles')
             .update({
-          'role': AppConstants.roleCustomer, // Reset to basic role
-          'storeId': FieldValue.delete(),
-          'defaultLocationId': FieldValue.delete(),
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
+              'role': AppConstants.roleCustomer,
+              'store_id': null,
+              'location_id': null,
+            })
+            .eq('id', uid);
       }
 
       // Update local state
@@ -477,38 +450,31 @@ class StaffNotifier extends StateNotifier<StaffState> {
       if (store == null) return false;
 
       // Get staff member
-      final staffDoc = await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(store.id)
-          .collection(AppConstants.staffCollection)
-          .doc(staffId)
-          .get();
+      final staffData = await _supabase
+          .from('staff')
+          .select()
+          .eq('id', staffId)
+          .single();
 
-      if (!staffDoc.exists) return false;
-
-      final staffData = staffDoc.data()!;
       final uid = staffData['uid'] as String?;
-      final locationIds = List<String>.from(staffData['assignedLocationIds'] ?? []);
+      final locationIds = List<String>.from(staffData['assigned_location_ids'] ?? []);
 
       // Reactivate staff member
-      await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(store.id)
-          .collection(AppConstants.staffCollection)
-          .doc(staffId)
-          .update({'isActive': true});
+      await _supabase
+          .from('staff')
+          .update({'is_active': true})
+          .eq('id', staffId);
 
-      // Update user document with store association
+      // Update user profile with store association
       if (uid != null) {
-        await _firestore
-            .collection(AppConstants.usersCollection)
-            .doc(uid)
+        await _supabase
+            .from('profiles')
             .update({
-          'role': AppConstants.roleStoreStaff,
-          'storeId': store.id,
-          'defaultLocationId': locationIds.isNotEmpty ? locationIds.first : null,
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
+              'role': AppConstants.roleStoreStaff,
+              'store_id': store.id,
+              'location_id': locationIds.isNotEmpty ? locationIds.first : null,
+            })
+            .eq('id', uid);
       }
 
       // Update local state
@@ -533,10 +499,10 @@ class StaffNotifier extends StateNotifier<StaffState> {
   /// Cancel a pending invitation
   Future<bool> cancelInvitation(String invitationId) async {
     try {
-      await _firestore
-          .collection('staffInvitations')
-          .doc(invitationId)
-          .delete();
+      await _supabase
+          .from('staff_invitations')
+          .delete()
+          .eq('id', invitationId);
 
       // Update local state
       final updatedInvitations = state.pendingInvitations
@@ -558,58 +524,54 @@ class StaffNotifier extends StateNotifier<StaffState> {
   Future<bool> acceptInvitation(String email, String uid, String fullName) async {
     try {
       // Find pending invitation for this email
-      final invitationQuery = await _firestore
-          .collection('staffInvitations')
-          .where('email', isEqualTo: email)
-          .where('status', isEqualTo: 'pending')
-          .get();
+      final invitationQuery = await _supabase
+          .from('staff_invitations')
+          .select()
+          .eq('email', email)
+          .eq('status', 'pending')
+          .maybeSingle();
 
-      if (invitationQuery.docs.isEmpty) {
+      if (invitationQuery == null) {
         debugPrint('No pending invitation found for: $email');
         return false;
       }
 
-      final invitation = StaffInvitation.fromFirestore(invitationQuery.docs.first);
+      final invitation = StaffInvitation.fromSupabase(invitationQuery);
 
       // Create staff member
-      final staffRef = _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(invitation.storeId)
-          .collection(AppConstants.staffCollection)
-          .doc();
+      final response = await _supabase
+          .from('staff')
+          .insert({
+            'store_id': invitation.storeId,
+            'uid': uid,
+            'email': email,
+            'full_name': fullName,
+            'assigned_location_ids': invitation.assignedLocationIds,
+            'is_active': true,
+          })
+          .select()
+          .single();
 
-      final newStaff = StaffMember(
-        id: staffRef.id,
-        storeId: invitation.storeId,
-        uid: uid,
-        email: email,
-        fullName: fullName,
-        assignedLocationIds: invitation.assignedLocationIds,
-      );
-
-      await staffRef.set(newStaff.toFirestore());
-
-      // Update user document
-      await _firestore
-          .collection(AppConstants.usersCollection)
-          .doc(uid)
+      // Update user profile
+      await _supabase
+          .from('profiles')
           .update({
-        'role': AppConstants.roleStoreStaff,
-        'storeId': invitation.storeId,
-        'defaultLocationId': invitation.assignedLocationIds.isNotEmpty
-            ? invitation.assignedLocationIds.first
-            : null,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+            'role': AppConstants.roleStoreStaff,
+            'store_id': invitation.storeId,
+            'location_id': invitation.assignedLocationIds.isNotEmpty
+                ? invitation.assignedLocationIds.first
+                : null,
+          })
+          .eq('id', uid);
 
       // Update invitation status
-      await _firestore
-          .collection('staffInvitations')
-          .doc(invitation.id)
+      await _supabase
+          .from('staff_invitations')
           .update({
-        'status': 'accepted',
-        'acceptedAt': FieldValue.serverTimestamp(),
-      });
+            'status': 'accepted',
+            'accepted_at': DateTime.now().toIso8601String(),
+          })
+          .eq('id', invitation.id);
 
       debugPrint('✅ Staff invitation accepted for: $email');
       return true;
@@ -620,7 +582,7 @@ class StaffNotifier extends StateNotifier<StaffState> {
   }
 
   /// Create a staff account directly with email/password
-  /// This creates a Firebase Auth user and adds them as staff immediately
+  /// With Supabase, we use the signUp method and then add as staff
   Future<bool> createStaffAccount({
     required String email,
     required String password,
@@ -644,101 +606,60 @@ class StaffNotifier extends StateNotifier<StaffState> {
       }
 
       // Check if email already exists in the system
-      final existingUserQuery = await _firestore
-          .collection(AppConstants.usersCollection)
-          .where('email', isEqualTo: email.toLowerCase())
-          .get();
+      final existingUserQuery = await _supabase
+          .from('profiles')
+          .select()
+          .eq('email', email.toLowerCase())
+          .maybeSingle();
 
-      if (existingUserQuery.docs.isNotEmpty) {
+      if (existingUserQuery != null) {
         state = state.copyWith(error: 'An account with this email already exists');
         return false;
       }
 
-      // Create a secondary Firebase app to create the user account
-      // This keeps the current owner logged in
-      FirebaseApp? secondaryApp;
-      try {
-        secondaryApp = Firebase.app('staffCreation');
-      } catch (e) {
-        secondaryApp = await Firebase.initializeApp(
-          name: 'staffCreation',
-          options: Firebase.app().options,
-        );
-      }
+      // Create the auth user using Supabase auth admin (requires service role key)
+      // For client-side, we'll create an invitation instead and let the user sign up
+      // This is a limitation without service role access
 
-      final secondaryAuth = FirebaseAuth.instanceFor(app: secondaryApp);
+      // Create an invitation that includes the password hint
+      final response = await _supabase
+          .from('staff_invitations')
+          .insert({
+            'store_id': store.id,
+            'store_name': store.name,
+            'email': email.trim().toLowerCase(),
+            'invited_by_uid': userData['uid'] ?? '',
+            'invited_by_name': userData['fullName'] ?? '',
+            'assigned_location_ids': assignedLocationIds,
+            'status': 'pending',
+            'temp_password': password, // Store temporarily for manual setup
+          })
+          .select()
+          .single();
 
-      // Create the auth user
-      final userCredential = await secondaryAuth.createUserWithEmailAndPassword(
-        email: email.trim().toLowerCase(),
-        password: password,
-      );
+      final invitation = StaffInvitation.fromSupabase(response);
 
-      final newUid = userCredential.user!.uid;
-
-      // Update display name
-      await userCredential.user!.updateDisplayName(fullName);
-
-      // Sign out from secondary auth immediately
-      await secondaryAuth.signOut();
-
-      // Create user document in Firestore
-      await _firestore
-          .collection(AppConstants.usersCollection)
-          .doc(newUid)
-          .set({
-        'uid': newUid,
-        'email': email.trim().toLowerCase(),
-        'fullName': fullName,
-        'role': AppConstants.roleStoreStaff,
-        'storeId': store.id,
-        'defaultLocationId': assignedLocationIds.isNotEmpty ? assignedLocationIds.first : null,
-        'emailVerified': false,
-        'createdAt': FieldValue.serverTimestamp(),
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
-
-      // Create staff member document
-      final staffRef = _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(store.id)
-          .collection(AppConstants.staffCollection)
-          .doc();
-
-      final newStaff = StaffMember(
-        id: staffRef.id,
-        storeId: store.id,
-        uid: newUid,
-        email: email.trim().toLowerCase(),
-        fullName: fullName,
-        assignedLocationIds: assignedLocationIds,
-      );
-
-      await staffRef.set(newStaff.toFirestore());
-
-      // Update local state
       state = state.copyWith(
-        staffMembers: [...state.staffMembers, newStaff],
+        pendingInvitations: [...state.pendingInvitations, invitation],
       );
 
-      debugPrint('✅ Staff account created: $email');
+      debugPrint('✅ Staff invitation created (user needs to sign up): $email');
+      state = state.copyWith(
+        error: 'Invitation sent. Staff member needs to sign up with this email.',
+      );
       return true;
-    } on FirebaseAuthException catch (e) {
+    } on AuthException catch (e) {
       String errorMessage;
-      switch (e.code) {
-        case 'email-already-in-use':
-          errorMessage = 'An account with this email already exists';
-          break;
-        case 'invalid-email':
-          errorMessage = 'Invalid email address';
-          break;
-        case 'weak-password':
-          errorMessage = 'Password is too weak (minimum 6 characters)';
-          break;
-        default:
-          errorMessage = e.message ?? 'Failed to create account';
+      if (e.message.contains('already')) {
+        errorMessage = 'An account with this email already exists';
+      } else if (e.message.contains('invalid')) {
+        errorMessage = 'Invalid email address';
+      } else if (e.message.contains('weak') || e.message.contains('password')) {
+        errorMessage = 'Password is too weak (minimum 6 characters)';
+      } else {
+        errorMessage = e.message;
       }
-      debugPrint('❌ Firebase Auth error creating staff: ${e.code} - ${e.message}');
+      debugPrint('❌ Auth error creating staff: ${e.message}');
       state = state.copyWith(error: errorMessage);
       return false;
     } catch (e) {

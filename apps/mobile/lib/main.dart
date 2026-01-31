@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:firebase_core/firebase_core.dart';
-import 'firebase_options.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'core/config/supabase_config.dart';
 import 'core/theme/app_theme.dart';
 import 'core/router/app_router.dart';
 import 'core/database/hive_service.dart';
@@ -11,9 +11,10 @@ import 'shared/services/sync_service.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Initialize Firebase
-  await Firebase.initializeApp(
-    options: DefaultFirebaseOptions.currentPlatform,
+  // Initialize Supabase
+  await Supabase.initialize(
+    url: SupabaseConfig.projectUrl,
+    anonKey: SupabaseConfig.anonKey,
   );
 
   // Initialize local database for offline support
@@ -31,6 +32,9 @@ void main() async {
     ),
   );
 }
+
+/// Get Supabase client instance
+SupabaseClient get supabase => Supabase.instance.client;
 
 class PayroPOSApp extends ConsumerStatefulWidget {
   const PayroPOSApp({super.key});

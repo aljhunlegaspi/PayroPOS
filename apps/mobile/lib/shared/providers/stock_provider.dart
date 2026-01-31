@@ -1,7 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import '../../core/constants/app_constants.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../services/connectivity_service.dart';
 import '../services/offline_data_service.dart';
 import 'store_provider.dart';
@@ -37,37 +36,35 @@ class StockHistory {
     required this.createdAt,
   });
 
-  factory StockHistory.fromFirestore(DocumentSnapshot doc) {
-    final data = doc.data() as Map<String, dynamic>;
+  factory StockHistory.fromSupabase(Map<String, dynamic> data) {
     return StockHistory(
-      id: doc.id,
-      productId: data['productId'] ?? '',
-      productName: data['productName'] ?? '',
-      locationId: data['locationId'] ?? '',
-      locationName: data['locationName'] ?? '',
-      quantityAdded: data['quantityAdded'] ?? 0,
-      previousStock: data['previousStock'] ?? 0,
-      newStock: data['newStock'] ?? 0,
+      id: data['id'] ?? '',
+      productId: data['product_id'] ?? '',
+      productName: data['product_name'] ?? '',
+      locationId: data['location_id'] ?? '',
+      locationName: data['location_name'] ?? '',
+      quantityAdded: data['quantity_added'] ?? 0,
+      previousStock: data['previous_stock'] ?? 0,
+      newStock: data['new_stock'] ?? 0,
       notes: data['notes'],
-      userId: data['userId'],
-      userName: data['userName'],
-      createdAt: (data['createdAt'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      userId: data['user_id'],
+      userName: data['user_name'],
+      createdAt: data['created_at'] != null ? DateTime.parse(data['created_at']) : DateTime.now(),
     );
   }
 
-  Map<String, dynamic> toMap() {
+  Map<String, dynamic> toSupabase() {
     return {
-      'productId': productId,
-      'productName': productName,
-      'locationId': locationId,
-      'locationName': locationName,
-      'quantityAdded': quantityAdded,
-      'previousStock': previousStock,
-      'newStock': newStock,
+      'product_id': productId,
+      'product_name': productName,
+      'location_id': locationId,
+      'location_name': locationName,
+      'quantity_added': quantityAdded,
+      'previous_stock': previousStock,
+      'new_stock': newStock,
       'notes': notes,
-      'userId': userId,
-      'userName': userName,
-      'createdAt': FieldValue.serverTimestamp(),
+      'user_id': userId,
+      'user_name': userName,
     };
   }
 }
@@ -99,13 +96,13 @@ class StockState {
 
 /// Stock Notifier - Handles restocking operations (supports offline)
 class StockNotifier extends StateNotifier<StockState> {
-  final FirebaseFirestore _firestore;
+  final SupabaseClient _supabase;
   final Ref _ref;
   String? _currentStoreId;
   OfflineDataService? _offlineService;
 
-  StockNotifier(this._ref, {FirebaseFirestore? firestore})
-      : _firestore = firestore ?? FirebaseFirestore.instance,
+  StockNotifier(this._ref, {SupabaseClient? supabase})
+      : _supabase = supabase ?? Supabase.instance.client,
         super(const StockState()) {
     _init();
   }
@@ -137,18 +134,16 @@ class StockNotifier extends StateNotifier<StockState> {
       List<StockHistory> history;
 
       if (_isOnline) {
-        // Online: load from Firestore
-        final snapshot = await _firestore
-            .collection(AppConstants.storesCollection)
-            .doc(_currentStoreId)
-            .collection('stockHistory')
-            .where('productId', isEqualTo: productId)
-            .orderBy('createdAt', descending: true)
-            .limit(50)
-            .get();
+        // Online: load from Supabase
+        final response = await _supabase
+            .from('stock_history')
+            .select()
+            .eq('product_id', productId)
+            .order('created_at', ascending: false)
+            .limit(50);
 
-        history = snapshot.docs
-            .map((doc) => StockHistory.fromFirestore(doc))
+        history = (response as List)
+            .map((data) => StockHistory.fromSupabase(data))
             .toList();
       } else {
         // Offline: load from local cache
@@ -180,16 +175,15 @@ class StockNotifier extends StateNotifier<StockState> {
     try {
       state = state.copyWith(isLoading: true, error: null);
 
-      final snapshot = await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(_currentStoreId)
-          .collection('stockHistory')
-          .orderBy('createdAt', descending: true)
-          .limit(limit)
-          .get();
+      final response = await _supabase
+          .from('stock_history')
+          .select()
+          .eq('store_id', _currentStoreId!)
+          .order('created_at', ascending: false)
+          .limit(limit);
 
-      final history = snapshot.docs
-          .map((doc) => StockHistory.fromFirestore(doc))
+      final history = (response as List)
+          .map((data) => StockHistory.fromSupabase(data))
           .toList();
 
       state = state.copyWith(history: history, isLoading: false);
@@ -207,17 +201,15 @@ class StockNotifier extends StateNotifier<StockState> {
     try {
       state = state.copyWith(isLoading: true, error: null);
 
-      final snapshot = await _firestore
-          .collection(AppConstants.storesCollection)
-          .doc(_currentStoreId)
-          .collection('stockHistory')
-          .where('locationId', isEqualTo: locationId)
-          .orderBy('createdAt', descending: true)
-          .limit(limit)
-          .get();
+      final response = await _supabase
+          .from('stock_history')
+          .select()
+          .eq('location_id', locationId)
+          .order('created_at', ascending: false)
+          .limit(limit);
 
-      final history = snapshot.docs
-          .map((doc) => StockHistory.fromFirestore(doc))
+      final history = (response as List)
+          .map((data) => StockHistory.fromSupabase(data))
           .toList();
 
       state = state.copyWith(history: history, isLoading: false);
@@ -249,51 +241,33 @@ class StockNotifier extends StateNotifier<StockState> {
       final newStock = previousStock + quantityToAdd;
 
       if (_isOnline) {
-        // Online: save directly to Firestore
-        final historyRef = _firestore
-            .collection(AppConstants.storesCollection)
-            .doc(_currentStoreId)
-            .collection('stockHistory')
-            .doc();
+        // Online: save directly to Supabase
 
-        final historyEntry = StockHistory(
-          id: historyRef.id,
-          productId: product.id,
-          productName: product.name,
-          locationId: locationId,
-          locationName: locationName,
-          quantityAdded: quantityToAdd,
-          previousStock: previousStock,
-          newStock: newStock,
-          notes: notes,
-          userId: userId,
-          userName: userName,
-          createdAt: DateTime.now(),
-        );
+        // Save stock history
+        await _supabase
+            .from('stock_history')
+            .insert({
+              'store_id': _currentStoreId,
+              'product_id': product.id,
+              'product_name': product.name,
+              'location_id': locationId,
+              'location_name': locationName,
+              'quantity_added': quantityToAdd,
+              'previous_stock': previousStock,
+              'new_stock': newStock,
+              'notes': notes,
+              'user_id': userId,
+              'user_name': userName,
+            });
 
         // Update product stock
         final updatedProduct = product.copyWithStockForLocation(locationId, newStock);
 
-        // Use batch to update both atomically
-        final batch = _firestore.batch();
+        await _supabase
+            .from('products')
+            .update({'stock_by_location': updatedProduct.stockByLocation})
+            .eq('id', product.id);
 
-        // Save stock history
-        batch.set(historyRef, historyEntry.toMap());
-
-        // Update product stock
-        batch.update(
-          _firestore
-              .collection(AppConstants.storesCollection)
-              .doc(_currentStoreId)
-              .collection('products')
-              .doc(product.id),
-          {
-            'stockByLocation': updatedProduct.stockByLocation,
-            'updatedAt': FieldValue.serverTimestamp(),
-          },
-        );
-
-        await batch.commit();
         debugPrint('✅ Restocked ${product.name} (online): +$quantityToAdd at $locationName ($previousStock -> $newStock)');
       } else {
         // Offline: save locally for later sync

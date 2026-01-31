@@ -7,7 +7,7 @@ class AppConstants {
   static const String appVersion = '1.0.0';
   static const String appDescription = 'Point of Sale with Customer Credit Tracking';
 
-  // Firebase Collections
+  // Supabase Tables
   static const String usersCollection = 'users';
   static const String storesCollection = 'stores';
   static const String productsCollection = 'products';
