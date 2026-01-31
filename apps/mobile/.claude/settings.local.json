@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(flutter doctor:*)",
+      "Bash(flutter clean:*)",
+      "Bash(flutter pub get:*)",
+      "Bash(tree:*)",
+      "Bash(dir /s \"C:\\\\Users\\\\User\\\\Desktop\\\\SHIKKIN\\\\PayroPOS\\\\apps\\\\mobile\\\\lib\" /b)",
+      "Bash(flutter analyze:*)",
+      "Bash(flutter build:*)",
+      "WebSearch",
+      "Bash(flutter pub run:*)",
+      "Bash(findstr:*)",
+      "Bash(Select-String -Pattern \"error\")",
+      "Bash(dir:*)",
+      "Bash(copy:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nBackup: Complete Firestore version before Supabase migration\n\nFeatures included:\n- Firebase Auth + Firestore database\n- Multi-location store support\n- Product management with barcode scanning\n- Customer credit tracking\n- Staff management with roles\n- Offline support with Hive\n- Transaction processing\n- Reports with profit calculation\n- QR code payment support \\(GCash/Maya\\)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
+    ]
+  }
+}

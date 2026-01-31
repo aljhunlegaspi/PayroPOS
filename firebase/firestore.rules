@@ -1,0 +1,124 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ========================================
+    // HELPER FUNCTIONS
+    // ========================================
+
+    // Check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Get user document
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    // Check if user is super admin
+    function isSuperAdmin() {
+      return isAuthenticated() && getUserData().role == 'super_admin';
+    }
+
+    // Check if user owns the store
+    function isStoreOwner(storeId) {
+      return isAuthenticated() &&
+             get(/databases/$(database)/documents/stores/$(storeId)).data.ownerId == request.auth.uid;
+    }
+
+    // Check if user is staff of the store
+    function isStoreStaff(storeId) {
+      return isAuthenticated() &&
+             exists(/databases/$(database)/documents/stores/$(storeId)/staff/$(request.auth.uid));
+    }
+
+    // Check if user has access to store (owner or staff)
+    function hasStoreAccess(storeId) {
+      return isStoreOwner(storeId) || isStoreStaff(storeId);
+    }
+
+    // ========================================
+    // USERS COLLECTION
+    // ========================================
+    match /users/{userId} {
+      // Users can read their own document
+      // Super admins can read all user documents
+      allow read: if isAuthenticated() &&
+                    (request.auth.uid == userId || isSuperAdmin());
+
+      // Users can only write to their own document
+      allow write: if isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // ========================================
+    // STORES COLLECTION
+    // ========================================
+    match /stores/{storeId} {
+      // Store owners and staff can read store document
+      // Super admins can read all stores
+      allow read: if hasStoreAccess(storeId) || isSuperAdmin();
+
+      // Only store owners can update store settings
+      // Super admins can update any store (for suspending, etc.)
+      allow write: if isStoreOwner(storeId) || isSuperAdmin();
+
+      // Anyone authenticated can create a store (during onboarding)
+      allow create: if isAuthenticated();
+
+      // ----------------------------------------
+      // CATEGORIES SUBCOLLECTION
+      // ----------------------------------------
+      match /categories/{categoryId} {
+        allow read: if hasStoreAccess(storeId);
+        allow write: if isStoreOwner(storeId);
+      }
+
+      // ----------------------------------------
+      // PRODUCTS SUBCOLLECTION
+      // ----------------------------------------
+      match /products/{productId} {
+        allow read: if hasStoreAccess(storeId);
+        allow write: if isStoreOwner(storeId);
+      }
+
+      // ----------------------------------------
+      // CUSTOMERS SUBCOLLECTION
+      // ----------------------------------------
+      match /customers/{customerId} {
+        allow read: if hasStoreAccess(storeId);
+        // Both owner and staff can manage customers
+        allow write: if hasStoreAccess(storeId);
+      }
+
+      // ----------------------------------------
+      // TRANSACTIONS SUBCOLLECTION
+      // ----------------------------------------
+      match /transactions/{transactionId} {
+        allow read: if hasStoreAccess(storeId);
+        // Both owner and staff can create transactions
+        allow create: if hasStoreAccess(storeId);
+        // Only owner can update/delete transactions
+        allow update, delete: if isStoreOwner(storeId);
+      }
+
+      // ----------------------------------------
+      // CREDIT PAYMENTS SUBCOLLECTION
+      // ----------------------------------------
+      match /creditPayments/{paymentId} {
+        allow read: if hasStoreAccess(storeId);
+        // Both owner and staff can record payments
+        allow write: if hasStoreAccess(storeId);
+      }
+
+      // ----------------------------------------
+      // STAFF SUBCOLLECTION
+      // ----------------------------------------
+      match /staff/{staffId} {
+        allow read: if hasStoreAccess(storeId);
+        // Only owner can manage staff
+        allow write: if isStoreOwner(storeId);
+      }
+    }
+  }
+}

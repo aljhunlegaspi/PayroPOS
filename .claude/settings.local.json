@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "Bash(dir \"%LOCALAPPDATA%\\\\flutter\")",
+      "Bash(dir \"%USERPROFILE%\\\\flutter\")",
+      "Bash(dir \"C:\\\\Program Files\\\\flutter\")",
+      "Bash(where:*)",
+      "Bash(flutter create:*)",
+      "Bash(gradlew:*)",
+      "Bash(.gradlew.bat:*)",
+      "Bash(flutter clean:*)"
+    ]
+  }
+}

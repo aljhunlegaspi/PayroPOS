@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- PayroPOS Launch Splash Screen with Radial Gradient -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Radial gradient background: light center (#2A5761) to dark edges (#173F49) -->
+    <item android:drawable="@drawable/splash_gradient" />
+
+    <!-- Centered logo -->
+    <item>
+        <bitmap
+            android:gravity="center"
+            android:src="@drawable/splash_logo" />
+    </item>
+</layer-list>
